@@ -24,6 +24,11 @@ export function useBudget() {
   const [session, setSession] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [syncStatus, setSyncStatus] = useState("Local only");
+  const [households, setHouseholds] = useState([]);
+  const [activeHouseholdId, setActiveHouseholdId] = useState("");
+  const [householdMembers, setHouseholdMembers] = useState([]);
+  const [householdProfiles, setHouseholdProfiles] = useState([]);
+  const [householdStatus, setHouseholdStatus] = useState("Sign in to connect household accounts.");
   const cloudLoadRef = useRef(false);
   const saveTimerRef = useRef(null);
 
@@ -56,6 +61,11 @@ export function useBudget() {
   useEffect(() => {
     if (!session?.user) {
       setSyncStatus("Local only");
+      setHouseholds([]);
+      setActiveHouseholdId("");
+      setHouseholdMembers([]);
+      setHouseholdProfiles([]);
+      setHouseholdStatus("Sign in to connect household accounts.");
       return;
     }
 
@@ -98,6 +108,21 @@ export function useBudget() {
       cancelled = true;
     };
   }, [session?.user?.id]);
+
+  useEffect(() => {
+    if (!session?.user) return;
+    loadHouseholds();
+  }, [session?.user?.id]);
+
+  useEffect(() => {
+    if (!session?.user || !activeHouseholdId) {
+      setHouseholdMembers([]);
+      setHouseholdProfiles([]);
+      return;
+    }
+
+    loadHouseholdDetails(activeHouseholdId);
+  }, [session?.user?.id, activeHouseholdId, data]);
 
   useEffect(() => {
     if (!session?.user || cloudLoadRef.current) return;
@@ -218,6 +243,134 @@ export function useBudget() {
     setSyncStatus("Local only");
   }
 
+  async function loadHouseholds() {
+    setHouseholdStatus("Loading household...");
+    const { data: memberships, error } = await supabase
+      .from("budget_household_members")
+      .select("household_id, role, display_name, budget_households(id, name, owner_id)")
+      .eq("user_id", session.user.id);
+
+    if (error) {
+      setHouseholdStatus(error.message);
+      return;
+    }
+
+    const nextHouseholds = (memberships || [])
+      .map((membership) => ({
+        id: membership.budget_households?.id || membership.household_id,
+        name: membership.budget_households?.name || "Household",
+        ownerId: membership.budget_households?.owner_id,
+        role: membership.role,
+        displayName: membership.display_name,
+      }))
+      .filter((household) => household.id);
+
+    setHouseholds(nextHouseholds);
+    setActiveHouseholdId((current) => {
+      if (current && nextHouseholds.some((household) => household.id === current)) return current;
+      return nextHouseholds[0]?.id || "";
+    });
+    setHouseholdStatus(nextHouseholds.length > 0 ? "Household connected" : "No household connected yet.");
+  }
+
+  async function loadHouseholdDetails(householdId) {
+    setHouseholdStatus("Loading household...");
+    const { data: members, error: memberError } = await supabase
+      .from("budget_household_members")
+      .select("household_id, user_id, display_name, role, created_at")
+      .eq("household_id", householdId)
+      .order("created_at", { ascending: true });
+
+    if (memberError) {
+      setHouseholdStatus(memberError.message);
+      return;
+    }
+
+    const userIds = (members || []).map((member) => member.user_id);
+    const { data: profiles, error: profileError } = await supabase
+      .from("budget_profiles")
+      .select("user_id, data")
+      .in("user_id", userIds.length > 0 ? userIds : ["00000000-0000-0000-0000-000000000000"]);
+
+    if (profileError) {
+      setHouseholdStatus(profileError.message);
+      return;
+    }
+
+    setHouseholdMembers(members || []);
+    const profileMap = new Map((profiles || []).map((profile) => [profile.user_id, normalizeBudgetData(profile.data)]));
+    if (session?.user?.id) profileMap.set(session.user.id, normalizeBudgetData(data));
+    setHouseholdProfiles(userIds.map((userId) => ({ userId, data: profileMap.get(userId) || normalizeBudgetData({}) })));
+    setHouseholdStatus("Household synced");
+  }
+
+  async function createHousehold(name, displayName) {
+    if (!session?.user) return { error: new Error("Sign in first.") };
+    setHouseholdStatus("Creating household...");
+    const { data: household, error } = await supabase
+      .from("budget_households")
+      .insert({ name: name.trim() || "My Household", owner_id: session.user.id })
+      .select("id")
+      .single();
+
+    if (error) {
+      setHouseholdStatus(error.message);
+      return { error };
+    }
+
+    const { error: memberError } = await supabase.from("budget_household_members").insert({
+      household_id: household.id,
+      user_id: session.user.id,
+      display_name: displayName.trim() || session.user.email || "Me",
+      role: "owner",
+    });
+
+    if (memberError) {
+      setHouseholdStatus(memberError.message);
+      return { error: memberError };
+    }
+
+    await loadHouseholds();
+    setActiveHouseholdId(household.id);
+    setHouseholdStatus("Household created");
+    return { error: null };
+  }
+
+  async function joinHousehold(householdId, displayName) {
+    if (!session?.user) return { error: new Error("Sign in first.") };
+    setHouseholdStatus("Joining household...");
+    const cleanHouseholdId = householdId.trim();
+    const { error } = await supabase.from("budget_household_members").insert({
+      household_id: cleanHouseholdId,
+      user_id: session.user.id,
+      display_name: displayName.trim() || session.user.email || "Me",
+      role: "member",
+    });
+
+    if (error) {
+      setHouseholdStatus(error.message);
+      return { error };
+    }
+
+    await loadHouseholds();
+    setActiveHouseholdId(cleanHouseholdId);
+    setHouseholdStatus("Household joined");
+    return { error: null };
+  }
+
+  async function leaveHousehold(householdId) {
+    if (!session?.user) return;
+    setHouseholdStatus("Leaving household...");
+    const { error } = await supabase
+      .from("budget_household_members")
+      .delete()
+      .eq("household_id", householdId)
+      .eq("user_id", session.user.id);
+
+    setHouseholdStatus(error ? error.message : "Left household");
+    await loadHouseholds();
+  }
+
   function resetData() {
     const next = resetBudgetData();
     setData(next);
@@ -230,6 +383,12 @@ export function useBudget() {
     user: session?.user || null,
     authLoading,
     syncStatus,
+    households,
+    activeHouseholdId,
+    setActiveHouseholdId,
+    householdMembers,
+    householdProfiles,
+    householdStatus,
     selectedMonth,
     setSelectedMonth,
     months,
@@ -246,6 +405,9 @@ export function useBudget() {
     signUp,
     signIn,
     signOut,
+    createHousehold,
+    joinHousehold,
+    leaveHousehold,
     resetData,
   };
 }

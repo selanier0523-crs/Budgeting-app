@@ -191,6 +191,34 @@ export function normalizeBudgetData(data) {
   };
 }
 
+export function mergeBudgetData(profiles) {
+  const normalizedProfiles = profiles.map((profile) => normalizeBudgetData(profile.data));
+  const listKeys = Object.keys(defaultLists);
+  const lists = Object.fromEntries(
+    listKeys.map((key) => [
+      key,
+      Array.from(new Set(normalizedProfiles.flatMap((profile) => profile.lists[key] || defaultLists[key]))),
+    ]),
+  );
+
+  return {
+    lists,
+    targets: defaultTargets,
+    transactions: profiles.flatMap((profile) =>
+      normalizeBudgetData(profile.data).transactions.map((item) => ({ ...item, ownerUserId: profile.userId })),
+    ),
+    income: profiles.flatMap((profile) =>
+      normalizeBudgetData(profile.data).income.map((item) => ({ ...item, ownerUserId: profile.userId })),
+    ),
+    savings: profiles.flatMap((profile) =>
+      normalizeBudgetData(profile.data).savings.map((item) => ({ ...item, ownerUserId: profile.userId })),
+    ),
+    reimbursements: profiles.flatMap((profile) =>
+      normalizeBudgetData(profile.data).reimbursements.map((item) => ({ ...item, ownerUserId: profile.userId })),
+    ),
+  };
+}
+
 export function resetBudgetData() {
   localStorage.removeItem(STORAGE_KEY);
   return seedData;

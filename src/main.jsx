@@ -5,6 +5,7 @@ import {
   CalendarDays,
   Cloud,
   CircleDollarSign,
+  Copy,
   Download,
   HandCoins,
   Home,
@@ -21,12 +22,15 @@ import {
   Trash2,
   Upload,
   UserRound,
+  UsersRound,
   WalletCards,
 } from "lucide-react";
 import { useBudget } from "./lib/useBudget";
 import {
+  calculateBudget,
   downloadJson,
   getReimbursementComputed,
+  mergeBudgetData,
   monthLabel,
   toCurrency,
   toShortDate,
@@ -41,6 +45,7 @@ const tabs = [
   { id: "savings", label: "Savings", icon: PiggyBank },
   { id: "reimbursements", label: "Owed To Me", icon: HandCoins },
   { id: "summaries", label: "Summaries", icon: LineChart },
+  { id: "household", label: "Household", icon: UsersRound },
   { id: "settings", label: "Settings", icon: Settings },
   { id: "account", label: "Account", icon: UserRound },
 ];
@@ -170,6 +175,7 @@ function App() {
         {activeTab === "savings" && <RecordScreen title="Savings" type="savings" budgetState={budgetState} />}
         {activeTab === "reimbursements" && <RecordScreen title="Owed To Me" type="reimbursements" budgetState={budgetState} />}
         {activeTab === "summaries" && <Summaries data={data} budget={budget} />}
+        {activeTab === "household" && <HouseholdScreen budgetState={budgetState} selectedMonth={selectedMonth} />}
         {activeTab === "settings" && <SettingsScreen budgetState={budgetState} />}
         {activeTab === "account" && <AccountScreen budgetState={budgetState} />}
       </main>
@@ -757,6 +763,205 @@ function Summaries({ data, budget }) {
   );
 }
 
+function HouseholdScreen({ budgetState, selectedMonth }) {
+  const {
+    user,
+    households,
+    activeHouseholdId,
+    setActiveHouseholdId,
+    householdMembers,
+    householdProfiles,
+    householdStatus,
+  } = budgetState;
+
+  const memberNameById = useMemo(() => {
+    return Object.fromEntries(
+      householdMembers.map((member) => [member.user_id, member.display_name || (member.user_id === user?.id ? user.email : "Household member")]),
+    );
+  }, [householdMembers, user?.email, user?.id]);
+
+  const mergedData = useMemo(() => mergeBudgetData(householdProfiles), [householdProfiles]);
+  const householdBudget = useMemo(() => calculateHouseholdBudget(mergedData, selectedMonth), [mergedData, selectedMonth]);
+  const activeHousehold = households.find((household) => household.id === activeHouseholdId);
+
+  if (!user) {
+    return (
+      <section className="panel account-panel">
+        <div className="panel-title">
+          <UsersRound size={18} />
+          <h2>Household</h2>
+        </div>
+        <p className="empty-text">Sign in from the Account tab to connect multiple household budgets.</p>
+      </section>
+    );
+  }
+
+  if (households.length === 0) {
+    return (
+      <section className="panel account-panel">
+        <div className="panel-title">
+          <UsersRound size={18} />
+          <h2>Household</h2>
+        </div>
+        <p className="empty-text">Create or join a household from the Account tab, then this page will show shared totals.</p>
+      </section>
+    );
+  }
+
+  return (
+    <div className="page-stack">
+      <section className="toolbar-band">
+        <div>
+          <p className="eyebrow">Connected Household</p>
+          <h2>{activeHousehold?.name || "Household"}</h2>
+          <p className="sync-line">
+            <Cloud size={14} />
+            {householdStatus}
+          </p>
+        </div>
+        <select value={activeHouseholdId} onChange={(event) => setActiveHouseholdId(event.target.value)} aria-label="Household">
+          {households.map((household) => (
+            <option key={household.id} value={household.id}>
+              {household.name}
+            </option>
+          ))}
+        </select>
+      </section>
+
+      <section className="kpi-grid household-kpis">
+        <Kpi label="Household Income" value={toCurrency(householdBudget.incomeTotal)} icon={CircleDollarSign} tone="green" />
+        <Kpi label="Household Spending" value={toCurrency(householdBudget.spendingTotal)} icon={WalletCards} tone="blue" />
+        <Kpi label="Household Saved" value={toCurrency(householdBudget.savingsTotal)} icon={PiggyBank} tone="amber" />
+        <Kpi label="Leftover" value={toCurrency(householdBudget.leftover)} icon={Landmark} tone={householdBudget.leftover >= 0 ? "green" : "rose"} />
+      </section>
+
+      <section className="dashboard-grid">
+        <Panel title="By Person" icon={UsersRound}>
+          <div className="table-wrap compact-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Person</th>
+                  <th>Income</th>
+                  <th>Spending</th>
+                  <th>Savings</th>
+                  <th>Leftover</th>
+                </tr>
+              </thead>
+              <tbody>
+                {householdBudget.byPerson.map((row) => (
+                  <tr key={row.userId}>
+                    <td>{memberNameById[row.userId] || "Household member"}</td>
+                    <td>{toCurrency(row.income)}</td>
+                    <td>{toCurrency(row.spending)}</td>
+                    <td>{toCurrency(row.savings)}</td>
+                    <td className={row.leftover < 0 ? "negative" : "positive"}>{toCurrency(row.leftover)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+
+        <Panel title="Spending By Category" icon={BarChart3}>
+          <div className="progress-list">
+            {householdBudget.categorySpending.slice(0, 8).map((item) => (
+              <ProgressRow key={item.name} label={item.name} spent={item.amount} budget={householdBudget.spendingTotal || 1} />
+            ))}
+            {householdBudget.categorySpending.length === 0 && <p className="empty-text">No household spending entered for this month.</p>}
+          </div>
+        </Panel>
+      </section>
+
+      <Panel title="Household Activity" icon={CalendarDays}>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Person</th>
+                <th>Type</th>
+                <th>Description</th>
+                <th>Category / Source</th>
+                <th>Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {householdBudget.activity.map((item) => (
+                <tr key={`${item.type}-${item.id}-${item.ownerUserId}`}>
+                  <td>{toShortDate(item.date)}</td>
+                  <td>{memberNameById[item.ownerUserId] || "Household member"}</td>
+                  <td>{item.typeLabel}</td>
+                  <td>{item.description}</td>
+                  <td>{item.detail}</td>
+                  <td className={item.type === "income" ? "positive" : ""}>{toCurrency(item.amount)}</td>
+                </tr>
+              ))}
+              {householdBudget.activity.length === 0 && (
+                <tr>
+                  <td colSpan="6">No household activity entered for {monthLabel(selectedMonth)}.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function calculateHouseholdBudget(data, selectedMonth) {
+  const budget = calculateBudget(data, selectedMonth);
+  const memberIds = Array.from(
+    new Set([
+      ...data.transactions.map((item) => item.ownerUserId),
+      ...data.income.map((item) => item.ownerUserId),
+      ...data.savings.map((item) => item.ownerUserId),
+    ].filter(Boolean)),
+  );
+
+  const byPerson = memberIds.map((userId) => {
+    const spending = data.transactions.filter((item) => item.ownerUserId === userId && item.date?.startsWith(selectedMonth)).reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    const income = data.income.filter((item) => item.ownerUserId === userId && item.date?.startsWith(selectedMonth)).reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    const savings = data.savings.filter((item) => item.ownerUserId === userId && item.date?.startsWith(selectedMonth)).reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    return { userId, income, spending, savings, leftover: income - spending - savings };
+  });
+
+  const activity = [
+    ...budget.monthlyTransactions.map((item) => ({
+      ...item,
+      type: "spending",
+      typeLabel: "Spending",
+      date: item.date,
+      detail: item.category,
+      description: item.description,
+    })),
+    ...budget.monthlyIncome.map((item) => ({
+      ...item,
+      type: "income",
+      typeLabel: "Income",
+      date: item.date,
+      detail: item.source || item.incomeType,
+      description: item.description || item.source,
+    })),
+    ...budget.monthlySavings.map((item) => ({
+      ...item,
+      type: "savings",
+      typeLabel: "Savings",
+      date: item.date,
+      detail: item.location,
+      description: item.purpose,
+    })),
+  ].sort((a, b) => b.date.localeCompare(a.date));
+
+  return {
+    ...budget,
+    byPerson,
+    categorySpending: budget.categorySpending.filter((item) => item.amount > 0).sort((a, b) => b.amount - a.amount),
+    activity,
+  };
+}
+
 function SettingsScreen({ budgetState }) {
   const { data, addListItem, removeListItem, updateCategoryBudget, updateTarget } = budgetState;
   const listLabels = {
@@ -783,12 +988,31 @@ function SettingsScreen({ budgetState }) {
 }
 
 function AccountScreen({ budgetState }) {
-  const { user, authLoading, syncStatus, signIn, signOut, signUp } = budgetState;
+  const {
+    user,
+    authLoading,
+    syncStatus,
+    households,
+    activeHouseholdId,
+    setActiveHouseholdId,
+    householdMembers,
+    householdStatus,
+    signIn,
+    signOut,
+    signUp,
+    createHousehold,
+    joinHousehold,
+    leaveHousehold,
+  } = budgetState;
   const [mode, setMode] = useState("signIn");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [householdName, setHouseholdName] = useState("My Household");
+  const [displayName, setDisplayName] = useState("");
+  const [joinCode, setJoinCode] = useState("");
+  const activeHousehold = households.find((household) => household.id === activeHouseholdId);
 
   async function submit(event) {
     event.preventDefault();
@@ -809,26 +1033,121 @@ function AccountScreen({ budgetState }) {
 
   if (user) {
     return (
-      <section className="panel account-panel">
-        <div className="panel-title">
-          <UserRound size={18} />
-          <h2>Your Account</h2>
-        </div>
-        <div className="account-card">
-          <span>Signed in as</span>
-          <strong>{user.email}</strong>
-          <p>
-            <Cloud size={16} />
-            {syncStatus}
+      <div className="settings-grid">
+        <section className="panel account-panel">
+          <div className="panel-title">
+            <UserRound size={18} />
+            <h2>Your Account</h2>
+          </div>
+          <div className="account-card">
+            <span>Signed in as</span>
+            <strong>{user.email}</strong>
+            <p>
+              <Cloud size={16} />
+              {syncStatus}
+            </p>
+          </div>
+          <p className="empty-text">
+            Your budget syncs to Supabase under your account. Household members can read your budget for the shared Household tab after you connect accounts.
           </p>
-        </div>
-        <p className="empty-text">
-          Your budget now syncs to Supabase under your account. Local browser storage still keeps a copy for quick loading.
-        </p>
-        <button className="secondary" onClick={signOut}>
-          Sign Out
-        </button>
-      </section>
+          <button className="secondary" onClick={signOut}>
+            Sign Out
+          </button>
+        </section>
+
+        <section className="panel account-panel">
+          <div className="panel-title">
+            <UsersRound size={18} />
+            <h2>Household Accounts</h2>
+          </div>
+          <p className="sync-line">
+            <Cloud size={14} />
+            {householdStatus}
+          </p>
+
+          {households.length > 0 && (
+            <div className="household-stack">
+              <label>
+                <span>Current Household</span>
+                <select value={activeHouseholdId} onChange={(event) => setActiveHouseholdId(event.target.value)}>
+                  {households.map((household) => (
+                    <option key={household.id} value={household.id}>
+                      {household.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="account-card">
+                <span>Household code</span>
+                <strong className="code-text">{activeHouseholdId}</strong>
+                <button className="icon-text" onClick={() => navigator.clipboard?.writeText(activeHouseholdId)} title="Copy household code">
+                  <Copy size={16} />
+                  Copy Code
+                </button>
+              </div>
+              <div className="mini-list">
+                {householdMembers.map((member) => (
+                  <div className="mini-row" key={member.user_id}>
+                    <div>
+                      <strong>{member.display_name || (member.user_id === user.id ? user.email : "Household member")}</strong>
+                      <span>{member.role === "owner" ? "Owner" : "Member"}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <button className="secondary" onClick={() => leaveHousehold(activeHouseholdId)}>
+                Leave Household
+              </button>
+            </div>
+          )}
+
+          <div className="household-forms">
+            <form className="account-form" onSubmit={async (event) => {
+              event.preventDefault();
+              setBusy(true);
+              const result = await createHousehold(householdName, displayName);
+              setMessage(result.error ? result.error.message : "Household created.");
+              setBusy(false);
+            }}>
+              <h3>Create Household</h3>
+              <label>
+                <span>Household Name</span>
+                <input value={householdName} onChange={(event) => setHouseholdName(event.target.value)} required />
+              </label>
+              <label>
+                <span>Your Display Name</span>
+                <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder={user.email} />
+              </label>
+              <button className="primary" type="submit" disabled={busy}>
+                Create Household
+              </button>
+            </form>
+
+            <form className="account-form" onSubmit={async (event) => {
+              event.preventDefault();
+              setBusy(true);
+              const result = await joinHousehold(joinCode, displayName);
+              setMessage(result.error ? result.error.message : "Household joined.");
+              setBusy(false);
+            }}>
+              <h3>Join Household</h3>
+              <label>
+                <span>Household Code</span>
+                <input value={joinCode} onChange={(event) => setJoinCode(event.target.value)} placeholder="Paste household code" required />
+              </label>
+              <label>
+                <span>Your Display Name</span>
+                <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder={user.email} />
+              </label>
+              <button className="secondary" type="submit" disabled={busy}>
+                Join Household
+              </button>
+            </form>
+          </div>
+          {activeHousehold && <p className="empty-text">Open the Household tab to see shared totals for {activeHousehold.name}.</p>}
+          {message && <p className="account-message">{message}</p>}
+        </section>
+      </div>
     );
   }
 

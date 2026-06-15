@@ -8,6 +8,17 @@ The app supports Supabase email/password accounts. Unsigned users keep using bro
 
 The Supabase table migration is in `supabase/migrations/`.
 
+## Household Accounts
+
+Signed-in users can connect budgets into a household. Each person still owns and edits only their own budget, while the Household tab shows shared income, spending, savings, category totals, and a transaction feed labeled by person.
+
+To connect accounts:
+
+1. One person signs in, opens Account, and creates a household.
+2. They copy the household code.
+3. Another signed-in person opens Account, pastes that code under Join Household, and chooses a display name.
+4. The Household tab shows the group summary once each member has synced budget data.
+
 ## Run Locally
 
 ```powershell
