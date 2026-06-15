@@ -60,7 +60,7 @@ const SavingsLocationChart = lazy(() =>
 
 function App() {
   const budgetState = useBudget();
-  const { data, user, syncStatus, selectedMonth, setSelectedMonth, months, budget, addRecord, importData, resetData } = budgetState;
+  const { data, user, syncStatus, selectedMonth, setSelectedMonth, months, budget, addRecord, importData } = budgetState;
   const [activeTab, setActiveTab] = useState("dashboard");
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [installPrompt, setInstallPrompt] = useState(null);
@@ -162,10 +162,6 @@ function App() {
                 Install
               </button>
             )}
-            <button className="icon-text danger-light" onClick={resetData} title="Reset example data">
-              <RotateCcw size={17} />
-              Reset
-            </button>
           </div>
         </header>
 
@@ -963,7 +959,7 @@ function calculateHouseholdBudget(data, selectedMonth) {
 }
 
 function SettingsScreen({ budgetState }) {
-  const { data, addListItem, removeListItem, updateCategoryBudget, updateTarget } = budgetState;
+  const { data, addListItem, removeListItem, resetData, updateCategoryBudget, updateTarget } = budgetState;
   const listLabels = {
     categories: "Categories",
     paymentMethods: "Payment Methods",
@@ -983,6 +979,27 @@ function SettingsScreen({ budgetState }) {
           onRemove={(value) => removeListItem(key, value)}
         />
       ))}
+      <section className="panel settings-wide danger-zone">
+        <div className="panel-title">
+          <RotateCcw size={18} />
+          <h2>Reset Budget</h2>
+        </div>
+        <p className="empty-text">
+          This clears all spending, income, savings, reimbursements, and budget target amounts. Your category and list settings stay in place.
+        </p>
+        <button
+          className="icon-text danger-action"
+          onClick={() => {
+            const confirmed = window.confirm(
+              "Are you sure you want to reset your budget? This will clear all money entries and set budget targets to zero.",
+            );
+            if (confirmed) resetData();
+          }}
+        >
+          <RotateCcw size={17} />
+          Reset All Money To Zero
+        </button>
+      </section>
     </div>
   );
 }

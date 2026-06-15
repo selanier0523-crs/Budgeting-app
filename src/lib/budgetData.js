@@ -219,9 +219,21 @@ export function mergeBudgetData(profiles) {
   };
 }
 
-export function resetBudgetData() {
-  localStorage.removeItem(STORAGE_KEY);
-  return seedData;
+export function resetBudgetData(currentData = loadBudgetData()) {
+  const normalized = normalizeBudgetData(currentData);
+  const zeroCategoryBudgets = Object.fromEntries(normalized.lists.categories.map((category) => [category, 0]));
+  return {
+    ...normalized,
+    transactions: [],
+    income: [],
+    savings: [],
+    reimbursements: [],
+    targets: {
+      ...normalized.targets,
+      monthlySavingsGoal: 0,
+      categoryBudgets: zeroCategoryBudgets,
+    },
+  };
 }
 
 export function toCurrency(value) {

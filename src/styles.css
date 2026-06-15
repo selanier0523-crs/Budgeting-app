@@ -205,6 +205,13 @@ button.ghost {
   color: #be123c;
 }
 
+.danger-action {
+  border-color: #fecdd3;
+  background: #fff1f2;
+  color: #be123c;
+  font-weight: 800;
+}
+
 .file-input {
   display: none;
 }
@@ -643,6 +650,21 @@ label span {
 
 .settings-wide {
   grid-column: 1 / -1;
+}
+
+.danger-zone {
+  display: grid;
+  gap: 14px;
+  border-color: #fecdd3;
+}
+
+.danger-zone .panel-title {
+  color: #be123c;
+  margin-bottom: 0;
+}
+
+.danger-zone button {
+  justify-self: start;
 }
 
 .target-grid {

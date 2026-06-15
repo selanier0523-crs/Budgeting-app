@@ -372,7 +372,7 @@ export function useBudget() {
   }
 
   function resetData() {
-    const next = resetBudgetData();
+    const next = resetBudgetData(data);
     setData(next);
     setSelectedMonth(getAvailableMonths(next)[0] || todayISO().slice(0, 7));
   }
