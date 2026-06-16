@@ -470,6 +470,16 @@ td {
   background: #fee2e2;
 }
 
+.status.not-paid {
+  color: #991b1b;
+  background: #fee2e2;
+}
+
+.status.not-reimbursable {
+  color: #475569;
+  background: #e2e8f0;
+}
+
 .status.partially-paid {
   color: #92400e;
   background: #fef3c7;

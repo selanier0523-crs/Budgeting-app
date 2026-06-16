@@ -30,6 +30,8 @@ import {
   calculateBudget,
   downloadJson,
   getReimbursementComputed,
+  getTransactionNetAmount,
+  getTransactionReimbursementComputed,
   mergeBudgetData,
   monthLabel,
   toCurrency,
@@ -244,7 +246,14 @@ function Dashboard({ data, budget, selectedMonth }) {
               .filter((item) => item.budget > 0 || item.spent > 0)
               .slice(0, 6)
               .map((item) => (
-                <ProgressRow key={item.name} label={item.name} spent={item.spent} budget={item.budget} remaining={item.remaining} />
+                <ProgressRow
+                  key={item.name}
+                  label={item.name}
+                  spent={item.spent}
+                  budget={item.budget}
+                  remaining={item.remaining}
+                  detail={item.reimbursed > 0 ? `${toCurrency(item.gross)} gross - ${toCurrency(item.reimbursed)} paid back` : ""}
+                />
               ))}
           </div>
         </Panel>
@@ -267,7 +276,7 @@ function Dashboard({ data, budget, selectedMonth }) {
                   <strong>{item.description}</strong>
                   <span>{toShortDate(item.date)} · {item.category}</span>
                 </div>
-                <b>{toCurrency(item.amount)}</b>
+                <b>{toCurrency(getTransactionNetAmount(item))}</b>
               </div>
             ))}
             {recentTransactions.length === 0 && <p className="empty-text">No spending entered for {monthLabel(selectedMonth)}.</p>}
@@ -294,7 +303,7 @@ function Dashboard({ data, budget, selectedMonth }) {
   );
 }
 
-function ProgressRow({ label, spent, budget, remaining, kind = "spending" }) {
+function ProgressRow({ label, spent, budget, remaining, detail = "", kind = "spending" }) {
   const percent = budget > 0 ? Math.min(Math.round((spent / budget) * 100), 999) : 0;
   const isOver = kind === "spending" && budget > 0 && spent > budget;
   const isSavingsMet = kind === "savings" && budget > 0 && spent >= budget;
@@ -319,6 +328,7 @@ function ProgressRow({ label, spent, budget, remaining, kind = "spending" }) {
             ? `${toCurrency(Math.abs(remaining))} over budget`
             : `${toCurrency(remaining)} left`}
       </small>
+      {detail && <small>{detail}</small>}
     </div>
   );
 }
@@ -421,10 +431,11 @@ function EditableTable({ type, rows, lists, onEdit, onDelete, onDuplicate }) {
         <tbody>
           {rows.map((row) => {
             const computed = type === "reimbursements" ? getReimbursementComputed(row) : null;
+            const transactionComputed = type === "transactions" ? getTransactionReimbursementComputed(row) : null;
             return (
               <tr key={row.id}>
                 {columns.map((column) => (
-                  <td key={column.key}>{formatCell(row, column, computed, lists)}</td>
+                  <td key={column.key}>{formatCell(row, column, computed, transactionComputed)}</td>
                 ))}
                 <td>
                   <div className="row-actions">
@@ -453,8 +464,13 @@ function getColumns(type) {
       { key: "description", label: "Description" },
       { key: "category", label: "Category" },
       { key: "amount", label: "Amount", kind: "money" },
+      { key: "amountPaidBack", label: "Paid Back", kind: "money" },
+      { key: "netAmount", label: "Net", kind: "transactionNet" },
       { key: "paymentMethod", label: "Payment" },
-      { key: "paidForSomeone", label: "For Someone?", kind: "boolean" },
+      { key: "personOwes", label: "Person" },
+      { key: "reimbursementStatus", label: "Reimbursement", kind: "transactionStatus" },
+      { key: "datePaidBack", label: "Paid Back Date", kind: "date" },
+      { key: "reimbursementPaymentMethod", label: "Paid Back Via" },
       { key: "reimbursementNotes", label: "Notes" },
     ],
     income: [
@@ -485,12 +501,17 @@ function getColumns(type) {
   return map[type];
 }
 
-function formatCell(row, column, computed) {
+function formatCell(row, column, computed, transactionComputed) {
   if (column.kind === "money") return toCurrency(row[column.key]);
   if (column.kind === "computedMoney") return toCurrency(computed.stillOwed);
+  if (column.kind === "transactionNet") return toCurrency(transactionComputed.netAmount);
   if (column.kind === "date") return row[column.key] ? toShortDate(row[column.key]) : "";
   if (column.kind === "boolean") return row[column.key] ? "Yes" : "No";
   if (column.kind === "status") return <span className={`status ${computed.status.toLowerCase().replace(/\s+/g, "-")}`}>{computed.status}</span>;
+  if (column.kind === "transactionStatus") {
+    const className = transactionComputed.status.toLowerCase().replace(/\s+/g, "-");
+    return <span className={`status ${className}`}>{transactionComputed.status}</span>;
+  }
   return row[column.key] || "";
 }
 
@@ -587,6 +608,10 @@ function makeInitialRecord(type, initial, lists) {
       amount: "",
       paymentMethod: lists.paymentMethods[0],
       paidForSomeone: false,
+      personOwes: "",
+      amountPaidBack: 0,
+      datePaidBack: "",
+      reimbursementPaymentMethod: "",
       reimbursementNotes: "",
     },
     income: {
@@ -619,6 +644,15 @@ function makeInitialRecord(type, initial, lists) {
 function normalizeRecord(type, record) {
   const next = { ...record };
   if (type === "transactions" || type === "income" || type === "savings") next.amount = Number(next.amount || 0);
+  if (type === "transactions") {
+    next.amountPaidBack = Number(next.amountPaidBack || 0);
+    if (!next.paidForSomeone) {
+      next.personOwes = "";
+      next.amountPaidBack = 0;
+      next.datePaidBack = "";
+      next.reimbursementPaymentMethod = "";
+    }
+  }
   if (type === "reimbursements") {
     next.amountPaid = Number(next.amountPaid || 0);
     next.amountPaidBack = Number(next.amountPaidBack || 0);
@@ -635,6 +669,10 @@ function fieldsForType(type, lists) {
       { key: "date", label: "Date", type: "date" },
       { key: "paymentMethod", label: "Payment Method", type: "select", options: lists.paymentMethods },
       { key: "paidForSomeone", label: "Paid For Someone", type: "checkbox" },
+      { key: "personOwes", label: "Person Who Owes Me" },
+      { key: "amountPaidBack", label: "Amount Paid Back", type: "number" },
+      { key: "datePaidBack", label: "Date Paid Back", type: "date" },
+      { key: "reimbursementPaymentMethod", label: "Paid Back Via", type: "select", options: ["", ...lists.paymentMethods] },
       { key: "reimbursementNotes", label: "Reimbursement Notes" },
     ],
     income: [
@@ -917,7 +955,7 @@ function calculateHouseholdBudget(data, selectedMonth) {
   );
 
   const byPerson = memberIds.map((userId) => {
-    const spending = data.transactions.filter((item) => item.ownerUserId === userId && item.date?.startsWith(selectedMonth)).reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    const spending = data.transactions.filter((item) => item.ownerUserId === userId && item.date?.startsWith(selectedMonth)).reduce((sum, item) => sum + getTransactionNetAmount(item), 0);
     const income = data.income.filter((item) => item.ownerUserId === userId && item.date?.startsWith(selectedMonth)).reduce((sum, item) => sum + Number(item.amount || 0), 0);
     const savings = data.savings.filter((item) => item.ownerUserId === userId && item.date?.startsWith(selectedMonth)).reduce((sum, item) => sum + Number(item.amount || 0), 0);
     return { userId, income, spending, savings, leftover: income - spending - savings };
@@ -931,6 +969,7 @@ function calculateHouseholdBudget(data, selectedMonth) {
       date: item.date,
       detail: item.category,
       description: item.description,
+      amount: getTransactionNetAmount(item),
     })),
     ...budget.monthlyIncome.map((item) => ({
       ...item,

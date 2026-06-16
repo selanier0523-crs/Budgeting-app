@@ -53,6 +53,10 @@ export const seedData = {
       amount: 54.32,
       paymentMethod: "Credit Card",
       paidForSomeone: false,
+      personOwes: "",
+      amountPaidBack: 0,
+      datePaidBack: "",
+      reimbursementPaymentMethod: "",
       reimbursementNotes: "",
     },
     {
@@ -63,6 +67,10 @@ export const seedData = {
       amount: 38.5,
       paymentMethod: "Debit Card",
       paidForSomeone: false,
+      personOwes: "",
+      amountPaidBack: 0,
+      datePaidBack: "",
+      reimbursementPaymentMethod: "",
       reimbursementNotes: "",
     },
     {
@@ -73,7 +81,11 @@ export const seedData = {
       amount: 24,
       paymentMethod: "Credit Card",
       paidForSomeone: true,
-      reimbursementNotes: "Alex",
+      personOwes: "Alex",
+      amountPaidBack: 24,
+      datePaidBack: "2026-06-08",
+      reimbursementPaymentMethod: "Venmo",
+      reimbursementNotes: "Dinner paid back",
     },
   ],
   income: [
@@ -143,24 +155,11 @@ export function createId(prefix) {
 export function loadBudgetData() {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (!stored) return seedData;
+    if (!stored) return normalizeBudgetData(seedData);
     const parsed = JSON.parse(stored);
-    const categoryBudgets = {
-      ...defaultTargets.categoryBudgets,
-      ...(parsed.targets?.categoryBudgets || {}),
-    };
-    return {
-      ...seedData,
-      ...parsed,
-      lists: { ...defaultLists, ...(parsed.lists || {}) },
-      targets: {
-        ...defaultTargets,
-        ...(parsed.targets || {}),
-        categoryBudgets,
-      },
-    };
+    return normalizeBudgetData(parsed);
   } catch {
-    return seedData;
+    return normalizeBudgetData(seedData);
   }
 }
 
@@ -178,7 +177,7 @@ export function normalizeBudgetData(data) {
   return {
     ...seedData,
     ...parsed,
-    transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [],
+    transactions: Array.isArray(parsed.transactions) ? parsed.transactions.map(normalizeTransaction) : [],
     income: Array.isArray(parsed.income) ? parsed.income : [],
     savings: Array.isArray(parsed.savings) ? parsed.savings : [],
     reimbursements: Array.isArray(parsed.reimbursements) ? parsed.reimbursements : [],
@@ -188,6 +187,18 @@ export function normalizeBudgetData(data) {
       ...(parsed.targets || {}),
       categoryBudgets,
     },
+  };
+}
+
+function normalizeTransaction(item) {
+  return {
+    ...item,
+    paidForSomeone: Boolean(item.paidForSomeone),
+    personOwes: item.personOwes || "",
+    amountPaidBack: Number(item.amountPaidBack || 0),
+    datePaidBack: item.datePaidBack || "",
+    reimbursementPaymentMethod: item.reimbursementPaymentMethod || "",
+    reimbursementNotes: item.reimbursementNotes || "",
   };
 }
 
@@ -280,6 +291,23 @@ export function getReimbursementComputed(item) {
   return { stillOwed, status };
 }
 
+export function getTransactionReimbursementComputed(item) {
+  const amount = Number(item.amount || 0);
+  const paidBack = Math.min(Number(item.amountPaidBack || 0), amount);
+  const stillOwed = item.paidForSomeone ? Math.max(amount - paidBack, 0) : 0;
+  const status = !item.paidForSomeone ? "Not reimbursable" : stillOwed === 0 ? "Paid" : paidBack > 0 ? "Partially Paid" : "Not Paid";
+  return {
+    paidBack: item.paidForSomeone ? paidBack : 0,
+    stillOwed,
+    status,
+    netAmount: Math.max(amount - (item.paidForSomeone ? paidBack : 0), 0),
+  };
+}
+
+export function getTransactionNetAmount(item) {
+  return getTransactionReimbursementComputed(item).netAmount;
+}
+
 export function getWeekStart(dateString) {
   const date = parseLocalDate(dateString);
   const day = date.getDay();
@@ -313,14 +341,16 @@ export function calculateBudget(data, selectedMonth) {
   const monthlySavings = data.savings.filter((item) => inMonth(item, selectedMonth));
 
   const incomeTotal = sum(monthlyIncome);
-  const spendingTotal = sum(monthlyTransactions);
+  const spendingTotal = sum(monthlyTransactions, getTransactionNetAmount);
   const savingsTotal = sum(monthlySavings);
   const owedTotal = sum(data.reimbursements, (item) => getReimbursementComputed(item).stillOwed);
   const leftover = incomeTotal - spendingTotal - savingsTotal;
 
   const categorySpending = data.lists.categories.map((category) => ({
     name: category,
-    amount: sum(monthlyTransactions.filter((item) => item.category === category)),
+    amount: sum(monthlyTransactions.filter((item) => item.category === category), getTransactionNetAmount),
+    gross: sum(monthlyTransactions.filter((item) => item.category === category)),
+    reimbursed: sum(monthlyTransactions.filter((item) => item.category === category), (item) => getTransactionReimbursementComputed(item).paidBack),
   }));
 
   const savingsByLocation = data.lists.savingsLocations.map((location) => ({
@@ -334,11 +364,16 @@ export function calculateBudget(data, selectedMonth) {
   }));
 
   const categoryBudgets = data.lists.categories.map((category) => {
-    const spent = sum(monthlyTransactions.filter((item) => item.category === category));
+    const categoryTransactions = monthlyTransactions.filter((item) => item.category === category);
+    const spent = sum(categoryTransactions, getTransactionNetAmount);
+    const gross = sum(categoryTransactions);
+    const reimbursed = sum(categoryTransactions, (item) => getTransactionReimbursementComputed(item).paidBack);
     const budget = Number(data.targets?.categoryBudgets?.[category] || 0);
     return {
       name: category,
       spent,
+      gross,
+      reimbursed,
       budget,
       remaining: budget - spent,
       percent: budget > 0 ? Math.round((spent / budget) * 100) : 0,
@@ -414,7 +449,7 @@ export function getWeeklySummary(data, selectedMonth) {
       const date = parseLocalDate(item.date);
       return date >= cursor && date < weekEnd;
     });
-    const spending = sum(tx);
+    const spending = sum(tx, getTransactionNetAmount);
     const income = sum(inc);
     const savings = sum(sav);
 
@@ -425,7 +460,7 @@ export function getWeeklySummary(data, selectedMonth) {
       income,
       savings,
       net: income - spending - savings,
-      categories: Object.fromEntries(data.lists.categories.map((cat) => [cat, sum(tx.filter((item) => item.category === cat))])),
+      categories: Object.fromEntries(data.lists.categories.map((cat) => [cat, sum(tx.filter((item) => item.category === cat), getTransactionNetAmount)])),
     });
     cursor.setDate(cursor.getDate() + 7);
   }
@@ -438,7 +473,7 @@ export function getMonthlySummary(data) {
     const transactions = data.transactions.filter((item) => inMonth(item, month));
     const income = data.income.filter((item) => inMonth(item, month));
     const savings = data.savings.filter((item) => inMonth(item, month));
-    const spending = sum(transactions);
+    const spending = sum(transactions, getTransactionNetAmount);
     const incomeTotal = sum(income);
     const savingsTotal = sum(savings);
     return {
@@ -448,7 +483,7 @@ export function getMonthlySummary(data) {
       income: incomeTotal,
       savings: savingsTotal,
       net: incomeTotal - spending - savingsTotal,
-      categories: Object.fromEntries(data.lists.categories.map((cat) => [cat, sum(transactions.filter((item) => item.category === cat))])),
+      categories: Object.fromEntries(data.lists.categories.map((cat) => [cat, sum(transactions.filter((item) => item.category === cat), getTransactionNetAmount)])),
     };
   });
 }
