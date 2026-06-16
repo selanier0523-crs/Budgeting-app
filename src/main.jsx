@@ -149,28 +149,16 @@ function App() {
             </p>
           </div>
           <div className="topbar-actions">
-            <select value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} aria-label="Selected month">
-              {months.map((month) => (
-                <option key={month} value={month}>
-                  {monthLabel(month)}
-                </option>
-              ))}
-            </select>
-            <button className="icon-text" onClick={() => downloadJson(data)} title="Export data">
-              <Download size={17} />
-              Export
-            </button>
-            <button className="icon-text" onClick={() => importInputRef.current?.click()} title="Import backup">
-              <Upload size={17} />
-              Import
-            </button>
-            <input ref={importInputRef} className="file-input" type="file" accept="application/json,.json" onChange={handleImportFile} />
-            {installPrompt && (
-              <button className="icon-text" onClick={installApp} title="Install app">
-                <Smartphone size={17} />
-                Install
-              </button>
-            )}
+            <label className="month-picker">
+              <span>Month</span>
+              <select value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} aria-label="Selected month">
+                {months.map((month) => (
+                  <option key={month} value={month}>
+                    {monthLabel(month)}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
         </header>
 
@@ -182,7 +170,17 @@ function App() {
         {activeTab === "reimbursements" && <RecordScreen title="Owed To Me" type="reimbursements" budgetState={budgetState} selectedMonth={selectedMonth} />}
         {activeTab === "summaries" && <Summaries data={data} budget={budget} selectedMonth={selectedMonth} />}
         {activeTab === "household" && <HouseholdScreen budgetState={budgetState} selectedMonth={selectedMonth} />}
-        {activeTab === "settings" && <SettingsScreen budgetState={budgetState} />}
+        {activeTab === "settings" && (
+          <SettingsScreen
+            budgetState={budgetState}
+            importInputRef={importInputRef}
+            onExport={() => downloadJson(data)}
+            onImportClick={() => importInputRef.current?.click()}
+            onImportFile={handleImportFile}
+            installPrompt={installPrompt}
+            onInstall={installApp}
+          />
+        )}
         {activeTab === "account" && <AccountScreen budgetState={budgetState} />}
       </main>
 
@@ -1339,7 +1337,7 @@ function calculateHouseholdBudget(data, selectedMonth) {
   };
 }
 
-function SettingsScreen({ budgetState }) {
+function SettingsScreen({ budgetState, importInputRef, onExport, onImportClick, onImportFile, installPrompt, onInstall }) {
   const { data, addListItem, removeListItem, resetData, updateCategoryBudget, updateTarget } = budgetState;
   const listLabels = {
     categories: "Categories",
@@ -1350,6 +1348,29 @@ function SettingsScreen({ budgetState }) {
   };
   return (
     <div className="settings-grid">
+      <section className="panel settings-wide management-panel">
+        <div className="panel-title">
+          <Settings size={18} />
+          <h2>App & Data</h2>
+        </div>
+        <div className="management-actions">
+          <button className="icon-text" onClick={onExport} title="Export data">
+            <Download size={17} />
+            Export Backup
+          </button>
+          <button className="icon-text" onClick={onImportClick} title="Import backup">
+            <Upload size={17} />
+            Import Backup
+          </button>
+          <input ref={importInputRef} className="file-input" type="file" accept="application/json,.json" onChange={onImportFile} />
+          {installPrompt && (
+            <button className="icon-text" onClick={onInstall} title="Install app">
+              <Smartphone size={17} />
+              Install App
+            </button>
+          )}
+        </div>
+      </section>
       <TargetEditor data={data} updateTarget={updateTarget} updateCategoryBudget={updateCategoryBudget} />
       {Object.entries(listLabels).map(([key, label]) => (
         <ListEditor
