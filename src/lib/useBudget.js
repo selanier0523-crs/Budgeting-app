@@ -3,6 +3,7 @@ import {
   calculateBudget,
   createId,
   getAvailableMonths,
+  getTransactionReimbursementComputed,
   loadBudgetData,
   normalizeBudgetData,
   resetBudgetData,
@@ -143,24 +144,44 @@ export function useBudget() {
   const budget = useMemo(() => calculateBudget(data, selectedMonth), [data, selectedMonth]);
 
   function addRecord(type, record) {
-    setData((current) => ({
-      ...current,
-      [type]: [{ ...record, id: createId(prefixByType[type]) }, ...current[type]],
-    }));
+    setData((current) => {
+      const nextRecord = { ...record, id: createId(prefixByType[type]) };
+      const nextData = {
+        ...current,
+        [type]: [nextRecord, ...current[type]],
+      };
+      return type === "transactions" ? syncLinkedTransactionReimbursement(nextData, nextRecord) : nextData;
+    });
   }
 
   function updateRecord(type, id, changes) {
-    setData((current) => ({
-      ...current,
-      [type]: current[type].map((item) => (item.id === id ? { ...item, ...changes } : item)),
-    }));
+    setData((current) => {
+      const nextRecord = { ...current[type].find((item) => item.id === id), ...changes };
+      const nextData = {
+        ...current,
+        [type]: current[type].map((item) => (item.id === id ? nextRecord : item)),
+      };
+      if (type === "transactions") return syncLinkedTransactionReimbursement(nextData, nextRecord);
+      if (type === "reimbursements" && nextRecord.sourceTransactionId) return syncTransactionFromLinkedReimbursement(nextData, nextRecord);
+      return nextData;
+    });
   }
 
   function deleteRecord(type, id) {
-    setData((current) => ({
-      ...current,
-      [type]: current[type].filter((item) => item.id !== id),
-    }));
+    setData((current) => {
+      if (type === "transactions") {
+        return {
+          ...current,
+          transactions: current.transactions.filter((item) => item.id !== id),
+          reimbursements: current.reimbursements.filter((item) => item.sourceTransactionId !== id),
+        };
+      }
+
+      return {
+        ...current,
+        [type]: current[type].filter((item) => item.id !== id),
+      };
+    });
   }
 
   function duplicateRecord(type, record) {
@@ -417,4 +438,50 @@ async function saveCloudBudget(data, userId) {
     user_id: userId,
     data,
   });
+}
+
+function syncLinkedTransactionReimbursement(data, transaction) {
+  const computed = getTransactionReimbursementComputed(transaction);
+  const existing = data.reimbursements.find((item) => item.sourceTransactionId === transaction.id);
+  const remainingReimbursements = data.reimbursements.filter((item) => item.sourceTransactionId !== transaction.id);
+
+  if (!transaction.paidForSomeone || computed.stillOwed <= 0) {
+    return { ...data, reimbursements: remainingReimbursements };
+  }
+
+  const linkedReimbursement = {
+    id: existing?.id || createId("reb"),
+    sourceTransactionId: transaction.id,
+    datePaid: transaction.date || todayISO(),
+    person: transaction.personOwes || "Someone",
+    description: transaction.description || "Paid for someone",
+    amountPaid: computed.amountOwed,
+    amountPaidBack: computed.paidBack,
+    datePaidBack: transaction.datePaidBack || "",
+    paymentMethod: transaction.reimbursementPaymentMethod || "",
+    notes: transaction.reimbursementNotes || "",
+  };
+
+  return {
+    ...data,
+    reimbursements: [linkedReimbursement, ...remainingReimbursements],
+  };
+}
+
+function syncTransactionFromLinkedReimbursement(data, reimbursement) {
+  const nextData = {
+    ...data,
+    transactions: data.transactions.map((transaction) =>
+      transaction.id === reimbursement.sourceTransactionId
+        ? {
+            ...transaction,
+            amountPaidBack: Number(reimbursement.amountPaidBack || 0),
+            datePaidBack: reimbursement.datePaidBack || "",
+            reimbursementPaymentMethod: reimbursement.paymentMethod || transaction.reimbursementPaymentMethod || "",
+          }
+        : transaction,
+    ),
+  };
+  const transaction = nextData.transactions.find((item) => item.id === reimbursement.sourceTransactionId);
+  return transaction ? syncLinkedTransactionReimbursement(nextData, transaction) : nextData;
 }

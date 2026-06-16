@@ -54,6 +54,7 @@ export const seedData = {
       paymentMethod: "Credit Card",
       paidForSomeone: false,
       personOwes: "",
+      amountOwed: 0,
       amountPaidBack: 0,
       datePaidBack: "",
       reimbursementPaymentMethod: "",
@@ -68,6 +69,7 @@ export const seedData = {
       paymentMethod: "Debit Card",
       paidForSomeone: false,
       personOwes: "",
+      amountOwed: 0,
       amountPaidBack: 0,
       datePaidBack: "",
       reimbursementPaymentMethod: "",
@@ -82,6 +84,7 @@ export const seedData = {
       paymentMethod: "Credit Card",
       paidForSomeone: true,
       personOwes: "Alex",
+      amountOwed: 24,
       amountPaidBack: 24,
       datePaidBack: "2026-06-08",
       reimbursementPaymentMethod: "Venmo",
@@ -195,6 +198,7 @@ function normalizeTransaction(item) {
     ...item,
     paidForSomeone: Boolean(item.paidForSomeone),
     personOwes: item.personOwes || "",
+    amountOwed: Number((item.amountOwed ?? (item.paidForSomeone ? item.amount : 0)) || 0),
     amountPaidBack: Number(item.amountPaidBack || 0),
     datePaidBack: item.datePaidBack || "",
     reimbursementPaymentMethod: item.reimbursementPaymentMethod || "",
@@ -293,10 +297,12 @@ export function getReimbursementComputed(item) {
 
 export function getTransactionReimbursementComputed(item) {
   const amount = Number(item.amount || 0);
-  const paidBack = Math.min(Number(item.amountPaidBack || 0), amount);
-  const stillOwed = item.paidForSomeone ? Math.max(amount - paidBack, 0) : 0;
+  const amountOwed = item.paidForSomeone ? Math.min(Number(item.amountOwed || 0), amount) : 0;
+  const paidBack = Math.min(Number(item.amountPaidBack || 0), amountOwed);
+  const stillOwed = item.paidForSomeone ? Math.max(amountOwed - paidBack, 0) : 0;
   const status = !item.paidForSomeone ? "Not reimbursable" : stillOwed === 0 ? "Paid" : paidBack > 0 ? "Partially Paid" : "Not Paid";
   return {
+    amountOwed,
     paidBack: item.paidForSomeone ? paidBack : 0,
     stillOwed,
     status,

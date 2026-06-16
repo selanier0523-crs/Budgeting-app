@@ -464,7 +464,9 @@ function getColumns(type) {
       { key: "description", label: "Description" },
       { key: "category", label: "Category" },
       { key: "amount", label: "Amount", kind: "money" },
+      { key: "amountOwed", label: "Owed", kind: "money" },
       { key: "amountPaidBack", label: "Paid Back", kind: "money" },
+      { key: "stillOwed", label: "Still Owed", kind: "transactionStillOwed" },
       { key: "netAmount", label: "Net", kind: "transactionNet" },
       { key: "paymentMethod", label: "Payment" },
       { key: "personOwes", label: "Person" },
@@ -504,6 +506,7 @@ function getColumns(type) {
 function formatCell(row, column, computed, transactionComputed) {
   if (column.kind === "money") return toCurrency(row[column.key]);
   if (column.kind === "computedMoney") return toCurrency(computed.stillOwed);
+  if (column.kind === "transactionStillOwed") return toCurrency(transactionComputed.stillOwed);
   if (column.kind === "transactionNet") return toCurrency(transactionComputed.netAmount);
   if (column.kind === "date") return row[column.key] ? toShortDate(row[column.key]) : "";
   if (column.kind === "boolean") return row[column.key] ? "Yes" : "No";
@@ -569,7 +572,7 @@ function RecordModal({ type, lists, initial, onClose, onSave, quickAdd = false, 
             ))}
           </div>
         )}
-        <div className="form-grid">{fieldsForType(type, lists).map((field) => (
+        <div className="form-grid">{fieldsForType(type, lists, record).map((field) => (
           <Field key={field.key} field={field} value={record[field.key]} onChange={(value) => update(field.key, value)} />
         ))}</div>
         <div className="modal-actions">
@@ -609,6 +612,7 @@ function makeInitialRecord(type, initial, lists) {
       paymentMethod: lists.paymentMethods[0],
       paidForSomeone: false,
       personOwes: "",
+      amountOwed: "",
       amountPaidBack: 0,
       datePaidBack: "",
       reimbursementPaymentMethod: "",
@@ -645,9 +649,11 @@ function normalizeRecord(type, record) {
   const next = { ...record };
   if (type === "transactions" || type === "income" || type === "savings") next.amount = Number(next.amount || 0);
   if (type === "transactions") {
+    next.amountOwed = Number(next.amountOwed || 0);
     next.amountPaidBack = Number(next.amountPaidBack || 0);
     if (!next.paidForSomeone) {
       next.personOwes = "";
+      next.amountOwed = 0;
       next.amountPaidBack = 0;
       next.datePaidBack = "";
       next.reimbursementPaymentMethod = "";
@@ -660,7 +666,7 @@ function normalizeRecord(type, record) {
   return next;
 }
 
-function fieldsForType(type, lists) {
+function fieldsForType(type, lists, record = {}) {
   const fields = {
     transactions: [
       { key: "amount", label: "Amount", type: "number", required: true },
@@ -669,12 +675,13 @@ function fieldsForType(type, lists) {
       { key: "date", label: "Date", type: "date" },
       { key: "paymentMethod", label: "Payment Method", type: "select", options: lists.paymentMethods },
       { key: "paidForSomeone", label: "Paid For Someone", type: "checkbox" },
-      { key: "personOwes", label: "Person Who Owes Me" },
-      { key: "amountPaidBack", label: "Amount Paid Back", type: "number" },
-      { key: "datePaidBack", label: "Date Paid Back", type: "date" },
-      { key: "reimbursementPaymentMethod", label: "Paid Back Via", type: "select", options: ["", ...lists.paymentMethods] },
-      { key: "reimbursementNotes", label: "Reimbursement Notes" },
-    ],
+      { key: "personOwes", label: "Person Who Owes Me", reimbursementOnly: true, required: true },
+      { key: "amountOwed", label: "Amount They Owe Me", type: "number", reimbursementOnly: true, required: true },
+      { key: "amountPaidBack", label: "Amount Paid Back", type: "number", reimbursementOnly: true },
+      { key: "datePaidBack", label: "Date Paid Back", type: "date", reimbursementOnly: true },
+      { key: "reimbursementPaymentMethod", label: "Paid Back Via", type: "select", options: ["", ...lists.paymentMethods], reimbursementOnly: true },
+      { key: "reimbursementNotes", label: "Reimbursement Notes", reimbursementOnly: true },
+    ].filter((field) => !field.reimbursementOnly || record.paidForSomeone),
     income: [
       { key: "amount", label: "Amount", type: "number", required: true },
       { key: "source", label: "Source", required: true },
