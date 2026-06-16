@@ -27,11 +27,16 @@ import {
 } from "lucide-react";
 import { useBudget } from "./lib/useBudget";
 import {
+  calculateSavingsBuckets,
   calculateBudget,
   downloadJson,
+  getAvailableYears,
   getReimbursementComputed,
-  getTransactionNetAmount,
+  getTransactionBudgetAmount,
+  getTransactionBucketAmount,
   getTransactionReimbursementComputed,
+  getYearlySpendingSummary,
+  inMonth,
   mergeBudgetData,
   monthLabel,
   sortRecordsByDateDesc,
@@ -46,6 +51,7 @@ const tabs = [
   { id: "transactions", label: "Spending", icon: WalletCards },
   { id: "income", label: "Income", icon: CircleDollarSign },
   { id: "savings", label: "Savings", icon: PiggyBank },
+  { id: "buckets", label: "Buckets", icon: Landmark },
   { id: "reimbursements", label: "Owed To Me", icon: HandCoins },
   { id: "summaries", label: "Summaries", icon: LineChart },
   { id: "household", label: "Household", icon: UsersRound },
@@ -169,11 +175,12 @@ function App() {
         </header>
 
         {activeTab === "dashboard" && <Dashboard data={data} budget={budget} selectedMonth={selectedMonth} />}
-        {activeTab === "transactions" && <RecordScreen title="Spending" type="transactions" budgetState={budgetState} />}
-        {activeTab === "income" && <RecordScreen title="Income" type="income" budgetState={budgetState} />}
-        {activeTab === "savings" && <RecordScreen title="Savings" type="savings" budgetState={budgetState} />}
-        {activeTab === "reimbursements" && <RecordScreen title="Owed To Me" type="reimbursements" budgetState={budgetState} />}
-        {activeTab === "summaries" && <Summaries data={data} budget={budget} />}
+        {activeTab === "transactions" && <RecordScreen title="Spending" type="transactions" budgetState={budgetState} selectedMonth={selectedMonth} />}
+        {activeTab === "income" && <RecordScreen title="Income" type="income" budgetState={budgetState} selectedMonth={selectedMonth} />}
+        {activeTab === "savings" && <RecordScreen title="Savings" type="savings" budgetState={budgetState} selectedMonth={selectedMonth} />}
+        {activeTab === "buckets" && <BucketsScreen budgetState={budgetState} />}
+        {activeTab === "reimbursements" && <RecordScreen title="Owed To Me" type="reimbursements" budgetState={budgetState} selectedMonth={selectedMonth} />}
+        {activeTab === "summaries" && <Summaries data={data} budget={budget} selectedMonth={selectedMonth} />}
         {activeTab === "household" && <HouseholdScreen budgetState={budgetState} selectedMonth={selectedMonth} />}
         {activeTab === "settings" && <SettingsScreen budgetState={budgetState} />}
         {activeTab === "account" && <AccountScreen budgetState={budgetState} />}
@@ -198,7 +205,7 @@ function Dashboard({ data, budget, selectedMonth }) {
   const visibleSavings = budget.savingsByLocation.filter((item) => item.amount > 0);
   const recentTransactions = budget.monthlyTransactions.slice(0, 5);
   const openReimbursements = sortRecordsByDateDesc(
-    data.reimbursements.filter((item) => getReimbursementComputed(item).stillOwed > 0),
+    budget.monthlyReimbursements.filter((item) => getReimbursementComputed(item).stillOwed > 0),
     "reimbursements",
   );
 
@@ -256,7 +263,10 @@ function Dashboard({ data, budget, selectedMonth }) {
                   spent={item.spent}
                   budget={item.budget}
                   remaining={item.remaining}
-                  detail={item.reimbursed > 0 ? `${toCurrency(item.gross)} gross - ${toCurrency(item.reimbursed)} paid back` : ""}
+                  detail={[
+                    item.reimbursed > 0 ? `${toCurrency(item.reimbursed)} paid back` : "",
+                    item.bucketUsed > 0 ? `${toCurrency(item.bucketUsed)} from buckets` : "",
+                  ].filter(Boolean).join(" | ")}
                 />
               ))}
           </div>
@@ -280,7 +290,7 @@ function Dashboard({ data, budget, selectedMonth }) {
                   <strong>{item.description}</strong>
                   <span>{toShortDate(item.date)} · {item.category}</span>
                 </div>
-                <b>{toCurrency(getTransactionNetAmount(item))}</b>
+                <b>{toCurrency(getTransactionBudgetAmount(item))}</b>
               </div>
             ))}
             {recentTransactions.length === 0 && <p className="empty-text">No spending entered for {monthLabel(selectedMonth)}.</p>}
@@ -369,11 +379,11 @@ function ChartLoading() {
   return <div className="chart-empty">Loading chart...</div>;
 }
 
-function RecordScreen({ title, type, budgetState }) {
+function RecordScreen({ title, type, budgetState, selectedMonth }) {
   const { data, addRecord, updateRecord, deleteRecord, duplicateRecord } = budgetState;
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState(null);
-  const rows = data[type];
+  const rows = data[type].filter((item) => inMonth(item, selectedMonth, type === "reimbursements" ? "datePaid" : "date"));
   const filteredRows = useMemo(() => {
     const text = query.toLowerCase();
     return sortRecordsByDateDesc(
@@ -400,6 +410,8 @@ function RecordScreen({ title, type, budgetState }) {
           type={type}
           rows={filteredRows}
           lists={data.lists}
+          buckets={data.savingsBuckets}
+          emptyMessage={`No ${title.toLowerCase()} records found for ${monthLabel(selectedMonth)}.`}
           onEdit={setEditing}
           onDelete={(id) => deleteRecord(type, id)}
           onDuplicate={(record) => duplicateRecord(type, record)}
@@ -410,6 +422,7 @@ function RecordScreen({ title, type, budgetState }) {
         <RecordModal
           type={type}
           lists={data.lists}
+          buckets={data.savingsBuckets}
           initial={editing}
           onClose={() => setEditing(null)}
           onSave={(record) => {
@@ -423,8 +436,8 @@ function RecordScreen({ title, type, budgetState }) {
   );
 }
 
-function EditableTable({ type, rows, lists, onEdit, onDelete, onDuplicate }) {
-  if (rows.length === 0) return <p className="empty-text">No records found.</p>;
+function EditableTable({ type, rows, lists, buckets = [], emptyMessage = "No records found.", onEdit, onDelete, onDuplicate }) {
+  if (rows.length === 0) return <p className="empty-text">{emptyMessage}</p>;
   const columns = getColumns(type);
   return (
     <div className="table-wrap">
@@ -442,7 +455,7 @@ function EditableTable({ type, rows, lists, onEdit, onDelete, onDuplicate }) {
             return (
               <tr key={row.id}>
                 {columns.map((column) => (
-                  <td key={column.key}>{formatCell(row, column, computed, transactionComputed)}</td>
+                  <td key={column.key}>{formatCell(row, column, computed, transactionComputed, buckets)}</td>
                 ))}
                 <td>
                   <div className="row-actions">
@@ -474,7 +487,10 @@ function getColumns(type) {
       { key: "amountOwed", label: "Owed", kind: "money" },
       { key: "amountPaidBack", label: "Paid Back", kind: "money" },
       { key: "stillOwed", label: "Still Owed", kind: "transactionStillOwed" },
+      { key: "savingsBucketId", label: "Bucket", kind: "bucket" },
+      { key: "bucketAmountUsed", label: "Bucket Used", kind: "transactionBucketUsed" },
       { key: "netAmount", label: "Net", kind: "transactionNet" },
+      { key: "budgetAmount", label: "Budget Counted", kind: "transactionBudget" },
       { key: "paymentMethod", label: "Payment" },
       { key: "personOwes", label: "Person" },
       { key: "reimbursementStatus", label: "Reimbursement", kind: "transactionStatus" },
@@ -495,6 +511,7 @@ function getColumns(type) {
       { key: "amount", label: "Amount", kind: "money" },
       { key: "location", label: "Saved To" },
       { key: "purpose", label: "Purpose" },
+      { key: "bucketId", label: "Bucket", kind: "bucket" },
       { key: "notes", label: "Notes" },
     ],
     reimbursements: [
@@ -510,11 +527,14 @@ function getColumns(type) {
   return map[type];
 }
 
-function formatCell(row, column, computed, transactionComputed) {
+function formatCell(row, column, computed, transactionComputed, buckets = []) {
   if (column.kind === "money") return toCurrency(row[column.key]);
   if (column.kind === "computedMoney") return toCurrency(computed.stillOwed);
   if (column.kind === "transactionStillOwed") return toCurrency(transactionComputed.stillOwed);
   if (column.kind === "transactionNet") return toCurrency(transactionComputed.netAmount);
+  if (column.kind === "transactionBucketUsed") return toCurrency(getTransactionBucketAmount(row));
+  if (column.kind === "transactionBudget") return toCurrency(getTransactionBudgetAmount(row));
+  if (column.kind === "bucket") return bucketName(buckets, row[column.key]);
   if (column.kind === "date") return row[column.key] ? toShortDate(row[column.key]) : "";
   if (column.kind === "boolean") return row[column.key] ? "Yes" : "No";
   if (column.kind === "status") return <span className={`status ${computed.status.toLowerCase().replace(/\s+/g, "-")}`}>{computed.status}</span>;
@@ -525,12 +545,18 @@ function formatCell(row, column, computed, transactionComputed) {
   return row[column.key] || "";
 }
 
+function bucketName(buckets = [], id) {
+  if (!id) return "";
+  return buckets.find((bucket) => bucket.id === id)?.name || "Deleted bucket";
+}
+
 function QuickAdd({ data, onClose, onAdd }) {
   const [type, setType] = useState("transactions");
   return (
     <RecordModal
       type={type}
       lists={data.lists}
+      buckets={data.savingsBuckets}
       initial={{}}
       quickAdd
       onClose={onClose}
@@ -540,7 +566,7 @@ function QuickAdd({ data, onClose, onAdd }) {
   );
 }
 
-function RecordModal({ type, lists, initial, onClose, onSave, quickAdd = false, onTypeChange }) {
+function RecordModal({ type, lists, buckets = [], initial, onClose, onSave, quickAdd = false, onTypeChange }) {
   const [record, setRecord] = useState(() => makeInitialRecord(type, initial, lists));
 
   function update(key, value) {
@@ -579,7 +605,7 @@ function RecordModal({ type, lists, initial, onClose, onSave, quickAdd = false, 
             ))}
           </div>
         )}
-        <div className="form-grid">{fieldsForType(type, lists, record).map((field) => (
+        <div className="form-grid">{fieldsForType(type, lists, record, buckets).map((field) => (
           <Field key={field.key} field={field} value={record[field.key]} onChange={(value) => update(field.key, value)} />
         ))}</div>
         <div className="modal-actions">
@@ -624,6 +650,8 @@ function makeInitialRecord(type, initial, lists) {
       datePaidBack: "",
       reimbursementPaymentMethod: "",
       reimbursementNotes: "",
+      savingsBucketId: "",
+      bucketAmountUsed: 0,
     },
     income: {
       date: todayISO(),
@@ -638,6 +666,7 @@ function makeInitialRecord(type, initial, lists) {
       amount: "",
       location: lists.savingsLocations[0],
       purpose: lists.savingsPurposes[0],
+      bucketId: "",
       notes: "",
     },
     reimbursements: {
@@ -658,6 +687,7 @@ function normalizeRecord(type, record) {
   if (type === "transactions") {
     next.amountOwed = Number(next.amountOwed || 0);
     next.amountPaidBack = Number(next.amountPaidBack || 0);
+    next.bucketAmountUsed = next.savingsBucketId ? Number(next.bucketAmountUsed || 0) : 0;
     if (!next.paidForSomeone) {
       next.personOwes = "";
       next.amountOwed = 0;
@@ -673,7 +703,11 @@ function normalizeRecord(type, record) {
   return next;
 }
 
-function fieldsForType(type, lists, record = {}) {
+function fieldsForType(type, lists, record = {}, buckets = []) {
+  const bucketOptions = [
+    { value: "", label: "No bucket" },
+    ...buckets.map((bucket) => ({ value: bucket.id, label: bucket.name })),
+  ];
   const fields = {
     transactions: [
       { key: "amount", label: "Amount", type: "number", required: true },
@@ -681,6 +715,8 @@ function fieldsForType(type, lists, record = {}) {
       { key: "category", label: "Category", type: "select", options: lists.categories },
       { key: "date", label: "Date", type: "date" },
       { key: "paymentMethod", label: "Payment Method", type: "select", options: lists.paymentMethods },
+      { key: "savingsBucketId", label: "Paid From Savings Bucket", type: "select", options: bucketOptions },
+      { key: "bucketAmountUsed", label: "Amount Covered By Bucket", type: "number", bucketOnly: true },
       { key: "paidForSomeone", label: "Paid For Someone", type: "checkbox" },
       { key: "personOwes", label: "Person Who Owes Me", reimbursementOnly: true, required: true },
       { key: "amountOwed", label: "Amount They Owe Me", type: "number", reimbursementOnly: true, required: true },
@@ -688,7 +724,7 @@ function fieldsForType(type, lists, record = {}) {
       { key: "datePaidBack", label: "Date Paid Back", type: "date", reimbursementOnly: true },
       { key: "reimbursementPaymentMethod", label: "Paid Back Via", type: "select", options: ["", ...lists.paymentMethods], reimbursementOnly: true },
       { key: "reimbursementNotes", label: "Reimbursement Notes", reimbursementOnly: true },
-    ].filter((field) => !field.reimbursementOnly || record.paidForSomeone),
+    ].filter((field) => (!field.reimbursementOnly || record.paidForSomeone) && (!field.bucketOnly || record.savingsBucketId)),
     income: [
       { key: "amount", label: "Amount", type: "number", required: true },
       { key: "source", label: "Source", required: true },
@@ -701,6 +737,7 @@ function fieldsForType(type, lists, record = {}) {
       { key: "amount", label: "Amount", type: "number", required: true },
       { key: "location", label: "Saved To", type: "select", options: lists.savingsLocations },
       { key: "purpose", label: "Purpose", type: "select", options: lists.savingsPurposes },
+      { key: "bucketId", label: "Add To Bucket", type: "select", options: bucketOptions },
       { key: "date", label: "Date", type: "date" },
       { key: "notes", label: "Notes" },
     ],
@@ -722,7 +759,10 @@ function Field({ field, value, onChange }) {
       <label>
         <span>{field.label}</span>
         <select value={value} onChange={(event) => onChange(event.target.value)} required={field.required}>
-          {field.options.map((option) => <option key={option} value={option}>{option}</option>)}
+          {field.options.map((option) => {
+            const normalized = typeof option === "string" ? { value: option, label: option } : option;
+            return <option key={normalized.value} value={normalized.value}>{normalized.label}</option>;
+          })}
         </select>
       </label>
     );
@@ -750,9 +790,297 @@ function Field({ field, value, onChange }) {
   );
 }
 
-function Summaries({ data, budget }) {
+function BucketsScreen({ budgetState }) {
+  const { data, addSavingsBucket, updateSavingsBucket, deleteSavingsBucket } = budgetState;
+  const [editing, setEditing] = useState(null);
+  const buckets = useMemo(() => calculateSavingsBuckets(data), [data]);
+  const totalBalance = buckets.reduce((total, bucket) => total + bucket.balance, 0);
+  const activeMonthly = buckets
+    .filter((bucket) => bucket.status === "active")
+    .reduce((total, bucket) => total + Number(bucket.monthlyContribution || 0), 0);
+  const totalSpent = buckets.reduce((total, bucket) => total + bucket.spent, 0);
+  const ledger = useMemo(() => {
+    const bucketById = Object.fromEntries(buckets.map((bucket) => [bucket.id, bucket]));
+    return [
+      ...data.savings
+        .filter((item) => item.bucketId)
+        .map((item) => ({
+          id: `sav-${item.id}`,
+          date: item.date,
+          bucket: bucketById[item.bucketId]?.name || "Deleted bucket",
+          type: "Contribution",
+          description: item.purpose || item.location,
+          amount: Number(item.amount || 0),
+        })),
+      ...data.transactions
+        .filter((item) => item.savingsBucketId && getTransactionBucketAmount(item) > 0)
+        .map((item) => ({
+          id: `tx-${item.id}`,
+          date: item.date,
+          bucket: bucketById[item.savingsBucketId]?.name || "Deleted bucket",
+          type: "Spent From Bucket",
+          description: item.description || item.category,
+          amount: -getTransactionBucketAmount(item),
+        })),
+    ].sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
+  }, [buckets, data.savings, data.transactions]);
+
   return (
     <div className="page-stack">
+      <section className="kpi-grid bucket-kpis">
+        <Kpi label="Bucket Balance" value={toCurrency(totalBalance)} icon={Landmark} tone="green" />
+        <Kpi label="Monthly Planned" value={toCurrency(activeMonthly)} icon={PiggyBank} tone="amber" />
+        <Kpi label="Spent From Buckets" value={toCurrency(totalSpent)} icon={WalletCards} tone="blue" />
+      </section>
+
+      <section className="toolbar-band">
+        <div>
+          <p className="eyebrow">Rollover Savings</p>
+          <h2>Savings Buckets</h2>
+        </div>
+        <button className="primary" onClick={() => setEditing({})}>
+          <Plus size={18} />
+          Add Bucket
+        </button>
+      </section>
+
+      <section className="bucket-grid">
+        {buckets.map((bucket) => (
+          <article className="bucket-card" key={bucket.id}>
+            <div className="bucket-card-header">
+              <div>
+                <p className="eyebrow">{bucket.status === "paused" ? "Paused" : "Active"}</p>
+                <h3>{bucket.name}</h3>
+              </div>
+              <span className={`status ${bucket.status === "paused" ? "partially-paid" : "paid"}`}>
+                {bucket.status === "paused" ? "Paused" : "Active"}
+              </span>
+            </div>
+            <ProgressRow
+              label="Saved"
+              spent={bucket.balance}
+              budget={bucket.goalAmount}
+              remaining={bucket.remaining}
+              kind="savings"
+            />
+            <div className="bucket-meta">
+              <span>Monthly: {toCurrency(bucket.monthlyContribution)}</span>
+              <span>Added: {toCurrency(bucket.contributed)}</span>
+              <span>Spent: {toCurrency(bucket.spent)}</span>
+              {bucket.targetDate && <span>Target: {toShortDate(bucket.targetDate)}</span>}
+            </div>
+            {bucket.notes && <p className="empty-text">{bucket.notes}</p>}
+            <div className="row-actions bucket-actions">
+              <button onClick={() => setEditing(bucket)}>Edit</button>
+              <button
+                className="danger"
+                onClick={() => {
+                  const confirmed = window.confirm(`Delete ${bucket.name}? Linked savings and spending records will stay, but will no longer point to this bucket.`);
+                  if (confirmed) deleteSavingsBucket(bucket.id);
+                }}
+              >
+                <Trash2 size={16} />
+              </button>
+            </div>
+          </article>
+        ))}
+        {buckets.length === 0 && (
+          <section className="panel">
+            <p className="empty-text">No savings buckets yet. Add one for trips, gifts, repairs, or any future expense you want to plan ahead for.</p>
+          </section>
+        )}
+      </section>
+
+      <Panel title="Bucket Activity" icon={CalendarDays}>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Bucket</th>
+                <th>Type</th>
+                <th>Description</th>
+                <th>Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ledger.map((item) => (
+                <tr key={item.id}>
+                  <td>{toShortDate(item.date)}</td>
+                  <td>{item.bucket}</td>
+                  <td>{item.type}</td>
+                  <td>{item.description}</td>
+                  <td className={item.amount < 0 ? "negative" : "positive"}>{toCurrency(item.amount)}</td>
+                </tr>
+              ))}
+              {ledger.length === 0 && (
+                <tr>
+                  <td colSpan="5">No bucket activity yet.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+
+      {editing && (
+        <BucketModal
+          initial={editing}
+          onClose={() => setEditing(null)}
+          onSave={(bucket) => {
+            if (bucket.id) updateSavingsBucket(bucket.id, bucket);
+            else addSavingsBucket(bucket);
+            setEditing(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function BucketModal({ initial, onClose, onSave }) {
+  const [bucket, setBucket] = useState(() => ({
+    name: "",
+    goalAmount: "",
+    startingBalance: 0,
+    monthlyContribution: "",
+    targetDate: "",
+    status: "active",
+    notes: "",
+    ...initial,
+  }));
+
+  function update(key, value) {
+    setBucket((current) => ({ ...current, [key]: value }));
+  }
+
+  function submit(event) {
+    event.preventDefault();
+    onSave({
+      ...bucket,
+      goalAmount: Number(bucket.goalAmount || 0),
+      startingBalance: Number(bucket.startingBalance || 0),
+      monthlyContribution: Number(bucket.monthlyContribution || 0),
+    });
+  }
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <form className="modal" onSubmit={submit}>
+        <div className="modal-header">
+          <div>
+            <p className="eyebrow">{bucket.id ? "Edit" : "Add"}</p>
+            <h2>Savings Bucket</h2>
+          </div>
+          <button type="button" className="ghost" onClick={onClose}>Close</button>
+        </div>
+        <div className="form-grid">
+          <label>
+            <span>Bucket Name</span>
+            <input value={bucket.name} onChange={(event) => update("name", event.target.value)} required autoFocus />
+          </label>
+          <label>
+            <span>Goal Amount</span>
+            <input type="number" step="0.01" value={bucket.goalAmount} onChange={(event) => update("goalAmount", event.target.value)} />
+          </label>
+          <label>
+            <span>Current Starting Balance</span>
+            <input type="number" step="0.01" value={bucket.startingBalance} onChange={(event) => update("startingBalance", event.target.value)} />
+          </label>
+          <label>
+            <span>Monthly Contribution</span>
+            <input type="number" step="0.01" value={bucket.monthlyContribution} onChange={(event) => update("monthlyContribution", event.target.value)} />
+          </label>
+          <label>
+            <span>Target Date</span>
+            <input type="date" value={bucket.targetDate} onChange={(event) => update("targetDate", event.target.value)} />
+          </label>
+          <label>
+            <span>Status</span>
+            <select value={bucket.status} onChange={(event) => update("status", event.target.value)}>
+              <option value="active">Active</option>
+              <option value="paused">Paused</option>
+            </select>
+          </label>
+          <label className="wide-field">
+            <span>Notes</span>
+            <input value={bucket.notes} onChange={(event) => update("notes", event.target.value)} />
+          </label>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="secondary" onClick={onClose}>Cancel</button>
+          <button type="submit" className="primary">Save Bucket</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function Summaries({ data, budget, selectedMonth }) {
+  const years = useMemo(() => getAvailableYears(data), [data]);
+  const [selectedYear, setSelectedYear] = useState(() => selectedMonth.slice(0, 4));
+  const yearRows = useMemo(() => getYearlySpendingSummary(data, selectedYear), [data, selectedYear]);
+  const yearTotal = yearRows.reduce((total, row) => total + row.spending, 0);
+  const yearGross = yearRows.reduce((total, row) => total + row.gross, 0);
+  const yearReimbursed = yearRows.reduce((total, row) => total + row.reimbursed, 0);
+  const yearBucketUsed = yearRows.reduce((total, row) => total + row.bucketUsed, 0);
+
+  useEffect(() => {
+    if (!years.includes(selectedYear)) setSelectedYear(selectedMonth.slice(0, 4));
+  }, [selectedMonth, selectedYear, years]);
+
+  return (
+    <div className="page-stack">
+      <section className="toolbar-band">
+        <div>
+          <p className="eyebrow">Year View</p>
+          <h2>Spending By Month</h2>
+        </div>
+        <select value={selectedYear} onChange={(event) => setSelectedYear(event.target.value)} aria-label="Selected year">
+          {years.map((year) => (
+            <option key={year} value={year}>
+              {year}
+            </option>
+          ))}
+        </select>
+      </section>
+
+      <section className="kpi-grid year-kpis">
+        <Kpi label="Net Spending" value={toCurrency(yearTotal)} icon={WalletCards} tone="blue" />
+        <Kpi label="Gross Spending" value={toCurrency(yearGross)} icon={CircleDollarSign} tone="amber" />
+        <Kpi label="Paid Back" value={toCurrency(yearReimbursed)} icon={HandCoins} tone="green" />
+        <Kpi label="From Buckets" value={toCurrency(yearBucketUsed)} icon={Landmark} tone="purple" />
+      </section>
+
+      <Panel title={`${selectedYear} Monthly Spending`} icon={BarChart3}>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Month</th>
+                <th>Gross Spending</th>
+                <th>Paid Back</th>
+                <th>From Buckets</th>
+                <th>Net Spending</th>
+                {data.lists.categories.map((category) => <th key={category}>{category}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {yearRows.map((row) => (
+                <tr key={row.month}>
+                  <td>{row.label}</td>
+                  <td>{toCurrency(row.gross)}</td>
+                  <td>{toCurrency(row.reimbursed)}</td>
+                  <td>{toCurrency(row.bucketUsed)}</td>
+                  <td>{toCurrency(row.spending)}</td>
+                  {data.lists.categories.map((category) => <td key={category}>{toCurrency(row.categories[category])}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+
       <Panel title="Weekly Summary" icon={CalendarDays}>
         <div className="table-wrap">
           <table>
@@ -969,7 +1297,7 @@ function calculateHouseholdBudget(data, selectedMonth) {
   );
 
   const byPerson = memberIds.map((userId) => {
-    const spending = data.transactions.filter((item) => item.ownerUserId === userId && item.date?.startsWith(selectedMonth)).reduce((sum, item) => sum + getTransactionNetAmount(item), 0);
+    const spending = data.transactions.filter((item) => item.ownerUserId === userId && item.date?.startsWith(selectedMonth)).reduce((sum, item) => sum + getTransactionBudgetAmount(item), 0);
     const income = data.income.filter((item) => item.ownerUserId === userId && item.date?.startsWith(selectedMonth)).reduce((sum, item) => sum + Number(item.amount || 0), 0);
     const savings = data.savings.filter((item) => item.ownerUserId === userId && item.date?.startsWith(selectedMonth)).reduce((sum, item) => sum + Number(item.amount || 0), 0);
     return { userId, income, spending, savings, leftover: income - spending - savings };
@@ -983,7 +1311,7 @@ function calculateHouseholdBudget(data, selectedMonth) {
       date: item.date,
       detail: item.category,
       description: item.description,
-      amount: getTransactionNetAmount(item),
+      amount: getTransactionBudgetAmount(item),
     })),
     ...budget.monthlyIncome.map((item) => ({
       ...item,
@@ -1039,6 +1367,7 @@ function SettingsScreen({ budgetState }) {
         </div>
         <p className="empty-text">
           This clears all spending, income, savings, reimbursements, and budget target amounts. Your category and list settings stay in place.
+          Savings bucket names stay in place, but their balances, goals, and monthly contributions are set to zero.
         </p>
         <button
           className="icon-text danger-action"

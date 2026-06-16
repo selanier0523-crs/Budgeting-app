@@ -17,6 +17,7 @@ const prefixByType = {
   income: "inc",
   savings: "sav",
   reimbursements: "reb",
+  savingsBuckets: "bucket",
 };
 
 export function useBudget() {
@@ -190,6 +191,31 @@ export function useBudget() {
     else copy.date = todayISO();
     delete copy.id;
     addRecord(type, copy);
+  }
+
+  function addSavingsBucket(bucket) {
+    setData((current) => ({
+      ...current,
+      savingsBuckets: [{ ...bucket, id: createId(prefixByType.savingsBuckets) }, ...(current.savingsBuckets || [])],
+    }));
+  }
+
+  function updateSavingsBucket(id, changes) {
+    setData((current) => ({
+      ...current,
+      savingsBuckets: (current.savingsBuckets || []).map((bucket) => (bucket.id === id ? { ...bucket, ...changes } : bucket)),
+    }));
+  }
+
+  function deleteSavingsBucket(id) {
+    setData((current) => ({
+      ...current,
+      savingsBuckets: (current.savingsBuckets || []).filter((bucket) => bucket.id !== id),
+      savings: current.savings.map((item) => (item.bucketId === id ? { ...item, bucketId: "" } : item)),
+      transactions: current.transactions.map((item) =>
+        item.savingsBucketId === id ? { ...item, savingsBucketId: "", bucketAmountUsed: 0 } : item,
+      ),
+    }));
   }
 
   function addListItem(listName, value) {
@@ -418,6 +444,9 @@ export function useBudget() {
     updateRecord,
     deleteRecord,
     duplicateRecord,
+    addSavingsBucket,
+    updateSavingsBucket,
+    deleteSavingsBucket,
     addListItem,
     removeListItem,
     updateTarget,
