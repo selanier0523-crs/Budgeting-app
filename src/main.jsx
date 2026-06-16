@@ -34,6 +34,7 @@ import {
   getTransactionReimbursementComputed,
   mergeBudgetData,
   monthLabel,
+  sortRecordsByDateDesc,
   toCurrency,
   toShortDate,
   todayISO,
@@ -196,7 +197,10 @@ function Dashboard({ data, budget, selectedMonth }) {
   const visibleCategories = budget.categorySpending.filter((item) => item.amount > 0);
   const visibleSavings = budget.savingsByLocation.filter((item) => item.amount > 0);
   const recentTransactions = budget.monthlyTransactions.slice(0, 5);
-  const openReimbursements = data.reimbursements.filter((item) => getReimbursementComputed(item).stillOwed > 0);
+  const openReimbursements = sortRecordsByDateDesc(
+    data.reimbursements.filter((item) => getReimbursementComputed(item).stillOwed > 0),
+    "reimbursements",
+  );
 
   return (
     <div className="page-stack">
@@ -372,8 +376,11 @@ function RecordScreen({ title, type, budgetState }) {
   const rows = data[type];
   const filteredRows = useMemo(() => {
     const text = query.toLowerCase();
-    return rows.filter((item) => JSON.stringify(item).toLowerCase().includes(text));
-  }, [rows, query]);
+    return sortRecordsByDateDesc(
+      rows.filter((item) => JSON.stringify(item).toLowerCase().includes(text)),
+      type,
+    );
+  }, [rows, query, type]);
 
   return (
     <div className="page-stack">

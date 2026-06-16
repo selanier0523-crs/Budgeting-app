@@ -289,6 +289,27 @@ export function inMonth(item, month, field = "date") {
   return monthKey(item[field]) === month;
 }
 
+export function recordDate(item, type = "transactions") {
+  if (type === "reimbursements") return item.datePaid || item.datePaidBack || "";
+  return item.date || "";
+}
+
+export function sortRecordsByDateDesc(items, type = "transactions") {
+  return [...items].sort((a, b) => {
+    const dateComparison = recordDate(b, type).localeCompare(recordDate(a, type));
+    if (dateComparison !== 0) return dateComparison;
+    return String(b.id || "").localeCompare(String(a.id || ""));
+  });
+}
+
+export function sortRecordsByDateAsc(items, type = "transactions") {
+  return [...items].sort((a, b) => {
+    const dateComparison = recordDate(a, type).localeCompare(recordDate(b, type));
+    if (dateComparison !== 0) return dateComparison;
+    return String(a.id || "").localeCompare(String(b.id || ""));
+  });
+}
+
 export function getReimbursementComputed(item) {
   const stillOwed = Math.max(Number(item.amountPaid || 0) - Number(item.amountPaidBack || 0), 0);
   const status = stillOwed === 0 ? "Paid" : Number(item.amountPaidBack || 0) === 0 ? "Unpaid" : "Partially Paid";
@@ -342,9 +363,9 @@ export function getAvailableMonths(data) {
 }
 
 export function calculateBudget(data, selectedMonth) {
-  const monthlyTransactions = data.transactions.filter((item) => inMonth(item, selectedMonth));
-  const monthlyIncome = data.income.filter((item) => inMonth(item, selectedMonth));
-  const monthlySavings = data.savings.filter((item) => inMonth(item, selectedMonth));
+  const monthlyTransactions = sortRecordsByDateDesc(data.transactions.filter((item) => inMonth(item, selectedMonth)), "transactions");
+  const monthlyIncome = sortRecordsByDateDesc(data.income.filter((item) => inMonth(item, selectedMonth)), "income");
+  const monthlySavings = sortRecordsByDateDesc(data.savings.filter((item) => inMonth(item, selectedMonth)), "savings");
 
   const incomeTotal = sum(monthlyIncome);
   const spendingTotal = sum(monthlyTransactions, getTransactionNetAmount);
