@@ -59,7 +59,31 @@ To install it on a phone, it needs to be served from a secure HTTPS URL. The eas
 
 Connecting directly to PNC from this local-only browser app is not safe or realistic because bank access requires server-side secrets and secure token storage.
 
-The feasible path is:
+The app now includes a Plaid Sandbox import path that uses Supabase Edge Functions as the backend. Imported bank transactions land in a review queue and do not affect the budget until approved.
+
+Current v1 behavior:
+
+- Plaid Link opens from the Imports tab.
+- The browser only receives a safe Link token.
+- Supabase Edge Functions exchange the Plaid public token and sync transactions.
+- Plaid access tokens are stored server-side only.
+- Synced transactions are saved as pending imports.
+- Approving an import creates a normal app spending, income, or savings record.
+- Rejecting an import keeps the budget unchanged.
+
+Supabase setup needed before real Sandbox testing:
+
+1. Apply the Plaid import migration in `supabase/migrations/20260617120000_create_budget_plaid_imports.sql`.
+2. Deploy these Supabase Edge Functions:
+   - `budget-plaid-create-link-token`
+   - `budget-plaid-exchange-token`
+   - `budget-plaid-sync-transactions`
+3. Add Supabase Edge Function secrets:
+   - `PLAID_CLIENT_ID`
+   - `PLAID_SECRET`
+   - `PLAID_ENV=sandbox`
+
+The eventual production path is:
 
 1. Create a Plaid developer account.
 2. Request/enable Production access if real PNC accounts are needed.

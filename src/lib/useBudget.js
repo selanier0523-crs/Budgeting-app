@@ -146,7 +146,7 @@ export function useBudget() {
 
   function addRecord(type, record) {
     setData((current) => {
-      const nextRecord = { ...record, id: createId(prefixByType[type]) };
+      const nextRecord = { id: createId(prefixByType[type]), ...record };
       const nextData = {
         ...current,
         [type]: [nextRecord, ...current[type]],

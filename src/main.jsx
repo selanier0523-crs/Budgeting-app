@@ -1,5 +1,6 @@
 import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { usePlaidLink } from "react-plaid-link";
 import {
   BarChart3,
   CalendarDays,
@@ -29,6 +30,7 @@ import { useBudget } from "./lib/useBudget";
 import {
   calculateSavingsBuckets,
   calculateBudget,
+  createId,
   downloadJson,
   getAvailableYears,
   getReimbursementComputed,
@@ -44,6 +46,7 @@ import {
   toShortDate,
   todayISO,
 } from "./lib/budgetData";
+import { supabase } from "./lib/supabaseClient";
 import "./styles.css";
 
 const tabs = [
@@ -52,6 +55,7 @@ const tabs = [
   { id: "income", label: "Income", icon: CircleDollarSign },
   { id: "savings", label: "Savings", icon: PiggyBank },
   { id: "buckets", label: "Buckets", icon: Landmark },
+  { id: "imports", label: "Imports", icon: Upload },
   { id: "reimbursements", label: "Owed To Me", icon: HandCoins },
   { id: "summaries", label: "Summaries", icon: LineChart },
   { id: "household", label: "Household", icon: UsersRound },
@@ -167,6 +171,7 @@ function App() {
         {activeTab === "income" && <RecordScreen title="Income" type="income" budgetState={budgetState} selectedMonth={selectedMonth} />}
         {activeTab === "savings" && <RecordScreen title="Savings" type="savings" budgetState={budgetState} selectedMonth={selectedMonth} />}
         {activeTab === "buckets" && <BucketsScreen budgetState={budgetState} />}
+        {activeTab === "imports" && <ImportsScreen budgetState={budgetState} />}
         {activeTab === "reimbursements" && <RecordScreen title="Owed To Me" type="reimbursements" budgetState={budgetState} selectedMonth={selectedMonth} />}
         {activeTab === "summaries" && <Summaries data={data} budget={budget} selectedMonth={selectedMonth} />}
         {activeTab === "household" && <HouseholdScreen budgetState={budgetState} selectedMonth={selectedMonth} />}
@@ -179,6 +184,7 @@ function App() {
             onImportFile={handleImportFile}
             installPrompt={installPrompt}
             onInstall={installApp}
+            onOpenImports={() => setActiveTab("imports")}
           />
         )}
         {activeTab === "account" && <AccountScreen budgetState={budgetState} />}
@@ -1014,6 +1020,387 @@ function BucketModal({ initial, onClose, onSave }) {
   );
 }
 
+function ImportsScreen({ budgetState }) {
+  const { data, user, addRecord } = budgetState;
+  const [imports, setImports] = useState([]);
+  const [accounts, setAccounts] = useState([]);
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [linkToken, setLinkToken] = useState(null);
+  const [openWhenReady, setOpenWhenReady] = useState(false);
+  const [edits, setEdits] = useState({});
+
+  const categoryOptions = {
+    expense: data.lists.categories,
+    income: data.lists.incomeTypes,
+    reimbursement: data.lists.incomeTypes,
+    savings: data.lists.savingsPurposes,
+    transfer: ["Other"],
+    unknown: ["Other"],
+  };
+
+  async function loadImports() {
+    if (!user) return;
+    const [importResult, accountResult] = await Promise.all([
+      supabase
+        .from("budget_imported_transactions")
+        .select("*")
+        .order("date", { ascending: false })
+        .order("created_at", { ascending: false }),
+      supabase.from("budget_plaid_accounts").select("*").order("created_at", { ascending: false }),
+    ]);
+
+    if (importResult.error) {
+      setMessage(importResult.error.message);
+      return;
+    }
+    if (accountResult.error) {
+      setMessage(accountResult.error.message);
+      return;
+    }
+
+    setImports(importResult.data || []);
+    setAccounts(accountResult.data || []);
+  }
+
+  useEffect(() => {
+    loadImports();
+  }, [user?.id]);
+
+  const { open, ready } = usePlaidLink({
+    token: linkToken,
+    onSuccess: async (publicToken, metadata) => {
+      setBusy(true);
+      setMessage("Connecting bank account...");
+      const { error } = await supabase.functions.invoke("budget-plaid-exchange-token", {
+        body: {
+          publicToken,
+          institutionName: metadata?.institution?.name || "",
+        },
+      });
+      if (error) {
+        setMessage(error.message);
+      } else {
+        setMessage("Bank connected. Run Sync Transactions to import pending entries.");
+        await loadImports();
+      }
+      setBusy(false);
+    },
+  });
+
+  useEffect(() => {
+    if (linkToken && ready && openWhenReady) {
+      open();
+      setOpenWhenReady(false);
+    }
+  }, [linkToken, ready, openWhenReady, open]);
+
+  function getEdit(imported) {
+    return {
+      final_type: imported.final_type || imported.suggested_type || "expense",
+      final_category: imported.final_category || imported.suggested_category || "Other",
+      ...edits[imported.id],
+    };
+  }
+
+  function updateEdit(id, changes) {
+    setEdits((current) => ({ ...current, [id]: { ...(current[id] || {}), ...changes } }));
+  }
+
+  async function connectBank() {
+    if (!user) {
+      setMessage("Sign in before connecting a bank account.");
+      return;
+    }
+    setBusy(true);
+    setMessage("Preparing Plaid Link...");
+    const { data: result, error } = await supabase.functions.invoke("budget-plaid-create-link-token", { body: {} });
+    setBusy(false);
+
+    if (error || !result?.link_token) {
+      setMessage(error?.message || result?.error || "Unable to create Plaid Link token.");
+      return;
+    }
+
+    setLinkToken(result.link_token);
+    setOpenWhenReady(true);
+    setMessage("Opening Plaid Link...");
+  }
+
+  async function syncTransactions() {
+    setBusy(true);
+    setMessage("Syncing transactions...");
+    const { data: result, error } = await supabase.functions.invoke("budget-plaid-sync-transactions", { body: {} });
+    if (error) {
+      setMessage(error.message);
+    } else {
+      setMessage(result?.message || `Sync complete. Added ${result?.added || 0}, modified ${result?.modified || 0}, removed ${result?.removed || 0}.`);
+      await loadImports();
+    }
+    setBusy(false);
+  }
+
+  async function rejectImport(imported) {
+    setBusy(true);
+    const { error } = await supabase.from("budget_imported_transactions").update({ approval_status: "rejected" }).eq("id", imported.id);
+    setBusy(false);
+    setMessage(error ? error.message : "Import rejected.");
+    await loadImports();
+  }
+
+  async function approveImport(imported) {
+    const edit = getEdit(imported);
+    const record = importedToRecord(imported, edit);
+    if (!record) {
+      setMessage("Choose Expense, Income, Savings, or Reimbursement before approving.");
+      return;
+    }
+
+    setBusy(true);
+    addRecord(record.type, record.record);
+    const { error } = await supabase
+      .from("budget_imported_transactions")
+      .update({
+        approval_status: "approved",
+        final_type: edit.final_type,
+        final_category: edit.final_category,
+        app_record_type: record.type,
+        app_record_id: record.record.id,
+      })
+      .eq("id", imported.id);
+    setBusy(false);
+
+    setMessage(error ? error.message : "Import approved and added to your budget.");
+    await loadImports();
+  }
+
+  if (!user) {
+    return (
+      <section className="panel account-panel">
+        <div className="panel-title">
+          <Upload size={18} />
+          <h2>Imported Transactions</h2>
+        </div>
+        <p className="empty-text">Sign in before connecting a bank account or reviewing imported transactions.</p>
+      </section>
+    );
+  }
+
+  const pending = imports.filter((item) => item.approval_status === "pending");
+  const reviewed = imports.filter((item) => item.approval_status !== "pending").slice(0, 12);
+
+  return (
+    <div className="page-stack">
+      <section className="toolbar-band">
+        <div>
+          <p className="eyebrow">Plaid Sandbox</p>
+          <h2>Imported Transactions</h2>
+          {message && <p className="sync-line"><Cloud size={14} />{message}</p>}
+        </div>
+        <div className="management-actions">
+          <button className="primary" onClick={connectBank} disabled={busy}>
+            <Landmark size={17} />
+            Connect Bank
+          </button>
+          <button className="icon-text" onClick={syncTransactions} disabled={busy || accounts.length === 0}>
+            <Download size={17} />
+            Sync Transactions
+          </button>
+        </div>
+      </section>
+
+      <section className="kpi-grid import-kpis">
+        <Kpi label="Connected Accounts" value={accounts.length} icon={Landmark} tone="green" />
+        <Kpi label="Pending Review" value={pending.length} icon={Upload} tone="amber" />
+        <Kpi label="Approved Imports" value={imports.filter((item) => item.approval_status === "approved").length} icon={CircleDollarSign} tone="blue" />
+        <Kpi label="Rejected Imports" value={imports.filter((item) => item.approval_status === "rejected").length} icon={Trash2} tone="rose" />
+      </section>
+
+      <Panel title="Pending Review" icon={Upload}>
+        <ImportReviewTable
+          imports={pending}
+          categoryOptions={categoryOptions}
+          getEdit={getEdit}
+          updateEdit={updateEdit}
+          onApprove={approveImport}
+          onReject={rejectImport}
+          busy={busy}
+        />
+      </Panel>
+
+      <Panel title="Recently Reviewed" icon={CalendarDays}>
+        <ReviewedImportsTable imports={reviewed} />
+      </Panel>
+    </div>
+  );
+}
+
+function importedToRecord(imported, edit) {
+  const common = {
+    importSource: "plaid",
+    plaidImportedTransactionId: imported.id,
+    plaidTransactionId: imported.plaid_transaction_id,
+    plaidAccountId: imported.plaid_account_id,
+    merchantName: imported.merchant_name,
+    accountName: imported.account_name,
+  };
+  const description = imported.merchant_name || imported.name || "Imported transaction";
+  const amount = Math.abs(Number(imported.amount || 0));
+  const idPrefix = edit.final_type === "income" || edit.final_type === "reimbursement" ? "inc" : edit.final_type === "savings" ? "sav" : "tx";
+
+  if (edit.final_type === "income" || edit.final_type === "reimbursement") {
+    return {
+      type: "income",
+      record: {
+        ...common,
+        id: createId(idPrefix),
+        date: imported.date,
+        source: imported.account_name || imported.merchant_name || "Plaid import",
+        description,
+        amount,
+        incomeType: edit.final_type === "reimbursement" ? "Paid back by someone" : edit.final_category,
+        notes: edit.final_type === "reimbursement" ? "Imported as reimbursement income. Link to the original expense if needed." : "",
+      },
+    };
+  }
+
+  if (edit.final_type === "savings") {
+    return {
+      type: "savings",
+      record: {
+        ...common,
+        id: createId(idPrefix),
+        date: imported.date,
+        amount,
+        location: imported.account_name || "Savings account",
+        purpose: edit.final_category,
+        bucketId: "",
+        notes: description,
+      },
+    };
+  }
+
+  if (edit.final_type === "expense") {
+    return {
+      type: "transactions",
+      record: {
+        ...common,
+        id: createId(idPrefix),
+        date: imported.date,
+        description,
+        category: edit.final_category,
+        amount,
+        paymentMethod: imported.account_name || "Debit Card",
+        paidForSomeone: false,
+        personOwes: "",
+        amountOwed: 0,
+        amountPaidBack: 0,
+        datePaidBack: "",
+        reimbursementPaymentMethod: "",
+        reimbursementNotes: "",
+        savingsBucketId: "",
+        bucketAmountUsed: 0,
+      },
+    };
+  }
+
+  return null;
+}
+
+function ImportReviewTable({ imports, categoryOptions, getEdit, updateEdit, onApprove, onReject, busy }) {
+  if (imports.length === 0) return <p className="empty-text">No imported transactions are waiting for review.</p>;
+
+  return (
+    <div className="table-wrap import-table">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Merchant</th>
+            <th>Account</th>
+            <th>Amount</th>
+            <th>Suggested</th>
+            <th>Final Type</th>
+            <th>Final Category</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {imports.map((imported) => {
+            const edit = getEdit(imported);
+            const options = categoryOptions[edit.final_type] || ["Other"];
+            return (
+              <tr key={imported.id}>
+                <td>{toShortDate(imported.date)}</td>
+                <td>
+                  <strong>{imported.merchant_name || imported.name}</strong>
+                  <span className="cell-subtext">{imported.plaid_category_primary || "Uncategorized"}</span>
+                </td>
+                <td>{imported.account_name || imported.plaid_account_id}</td>
+                <td>{toCurrency(imported.amount)}</td>
+                <td>
+                  <span className="status not-reimbursable">{imported.suggested_type}</span>
+                  <span className="cell-subtext">{imported.suggested_category}</span>
+                </td>
+                <td>
+                  <select
+                    value={edit.final_type}
+                    onChange={(event) => updateEdit(imported.id, { final_type: event.target.value, final_category: (categoryOptions[event.target.value] || ["Other"])[0] })}
+                  >
+                    {["expense", "income", "reimbursement", "savings", "transfer", "unknown"].map((type) => <option key={type} value={type}>{type}</option>)}
+                  </select>
+                </td>
+                <td>
+                  <select value={edit.final_category} onChange={(event) => updateEdit(imported.id, { final_category: event.target.value })}>
+                    {options.map((option) => <option key={option} value={option}>{option}</option>)}
+                  </select>
+                </td>
+                <td>
+                  <div className="row-actions">
+                    <button className="primary" onClick={() => onApprove(imported)} disabled={busy || ["transfer", "unknown"].includes(edit.final_type)}>Approve</button>
+                    <button className="danger" onClick={() => onReject(imported)} disabled={busy}>Reject</button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ReviewedImportsTable({ imports }) {
+  if (imports.length === 0) return <p className="empty-text">Approved and rejected imports will show here.</p>;
+
+  return (
+    <div className="table-wrap compact-table">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Merchant</th>
+            <th>Amount</th>
+            <th>Status</th>
+            <th>Added As</th>
+          </tr>
+        </thead>
+        <tbody>
+          {imports.map((item) => (
+            <tr key={item.id}>
+              <td>{toShortDate(item.date)}</td>
+              <td>{item.merchant_name || item.name}</td>
+              <td>{toCurrency(item.amount)}</td>
+              <td><span className={`status ${item.approval_status === "approved" ? "paid" : "not-paid"}`}>{item.approval_status}</span></td>
+              <td>{item.app_record_type || item.final_type || item.suggested_type}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function Summaries({ data, budget, selectedMonth }) {
   const years = useMemo(() => getAvailableYears(data), [data]);
   const [selectedYear, setSelectedYear] = useState(() => selectedMonth.slice(0, 4));
@@ -1337,7 +1724,7 @@ function calculateHouseholdBudget(data, selectedMonth) {
   };
 }
 
-function SettingsScreen({ budgetState, importInputRef, onExport, onImportClick, onImportFile, installPrompt, onInstall }) {
+function SettingsScreen({ budgetState, importInputRef, onExport, onImportClick, onImportFile, installPrompt, onInstall, onOpenImports }) {
   const { data, addListItem, removeListItem, resetData, updateCategoryBudget, updateTarget } = budgetState;
   const listLabels = {
     categories: "Categories",
@@ -1361,6 +1748,10 @@ function SettingsScreen({ budgetState, importInputRef, onExport, onImportClick, 
           <button className="icon-text" onClick={onImportClick} title="Import backup">
             <Upload size={17} />
             Import Backup
+          </button>
+          <button className="icon-text" onClick={onOpenImports} title="Connect bank">
+            <Landmark size={17} />
+            Connect Bank
           </button>
           <input ref={importInputRef} className="file-input" type="file" accept="application/json,.json" onChange={onImportFile} />
           {installPrompt && (
