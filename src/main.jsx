@@ -1362,8 +1362,7 @@ const IMPORTABLE_PLAID_TYPE_LABELS = {
 
 function matchingImportCategory(options, requestedCategory) {
   if (options.includes(requestedCategory)) return requestedCategory;
-  if (options.includes("Other")) return "Other";
-  return options[0] || "";
+  return "";
 }
 
 function PlaidLinkLauncher({ token, onSuccess, onExit, onLoadFailure }) {
@@ -1504,7 +1503,7 @@ function ImportReviewTable({ imports, categoryOptions, getEdit, updateEdit, onAp
                       const finalType = event.target.value;
                       updateEdit(imported.id, {
                         final_type: finalType,
-                        final_category: matchingImportCategory(categoryOptions[finalType] || [], imported.suggested_category),
+                        final_category: "",
                       });
                     }}
                   >
@@ -1513,8 +1512,12 @@ function ImportReviewTable({ imports, categoryOptions, getEdit, updateEdit, onAp
                   </select>
                 </td>
                 <td>
-                  <select value={edit.final_category} onChange={(event) => updateEdit(imported.id, { final_category: event.target.value })}>
-                    {options.length === 0 && <option value="">No categories available</option>}
+                  <select
+                    value={edit.final_category}
+                    disabled={!edit.final_type}
+                    onChange={(event) => updateEdit(imported.id, { final_category: event.target.value })}
+                  >
+                    <option value="">Choose category</option>
                     {options.map((option) => <option key={option} value={option}>{option}</option>)}
                   </select>
                 </td>
