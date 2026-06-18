@@ -73,7 +73,25 @@ const SavingsLocationChart = lazy(() =>
 
 function App() {
   const budgetState = useBudget();
-  const { data, user, syncStatus, selectedMonth, setSelectedMonth, months, budget, addRecord, importData } = budgetState;
+  const {
+    data,
+    user,
+    authLoading,
+    accountDataLoading,
+    accountLoadError,
+    accountSetup,
+    accountSetupBusy,
+    finishAccountSetup,
+    retryAccountLoad,
+    signOut,
+    syncStatus,
+    selectedMonth,
+    setSelectedMonth,
+    months,
+    budget,
+    addRecord,
+    importData,
+  } = budgetState;
   const [activeTab, setActiveTab] = useState("dashboard");
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [installPrompt, setInstallPrompt] = useState(null);
@@ -111,6 +129,14 @@ function App() {
     } finally {
       event.target.value = "";
     }
+  }
+
+  if (authLoading || accountDataLoading) {
+    return <AccountDataLoading message={authLoading ? "Checking your account..." : "Loading your budget..."} />;
+  }
+
+  if (user && accountLoadError) {
+    return <AccountLoadFailure message={accountLoadError} onRetry={retryAccountLoad} onSignOut={signOut} />;
   }
 
   return (
@@ -200,6 +226,81 @@ function App() {
           }}
         />
       )}
+
+      {accountSetup && (
+        <AccountSetupModal
+          email={user?.email || "this account"}
+          localData={accountSetup.localData}
+          busy={accountSetupBusy}
+          error={accountSetup.error}
+          onChoose={finishAccountSetup}
+        />
+      )}
+    </div>
+  );
+}
+
+function AccountDataLoading({ message }) {
+  return (
+    <main className="account-loading-screen" aria-live="polite" aria-busy="true">
+      <div className="brand-mark">
+        <PiggyBank size={24} />
+      </div>
+      <strong>Budget Tracker</strong>
+      <span>{message}</span>
+    </main>
+  );
+}
+
+function AccountLoadFailure({ message, onRetry, onSignOut }) {
+  return (
+    <main className="account-loading-screen account-load-failure">
+      <div className="brand-mark">
+        <Cloud size={24} />
+      </div>
+      <strong>Your budget could not be loaded</strong>
+      <span>{message}</span>
+      <div className="account-load-actions">
+        <button className="primary" onClick={onRetry}>Try Again</button>
+        <button className="secondary" onClick={onSignOut}>Sign Out</button>
+      </div>
+    </main>
+  );
+}
+
+function AccountSetupModal({ email, localData, busy, error, onChoose }) {
+  const localRecordCount =
+    localData.transactions.length + localData.income.length + localData.savings.length + localData.reimbursements.length;
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="account-setup-title">
+      <section className="modal account-setup-modal">
+        <div className="modal-header">
+          <div>
+            <p className="eyebrow">New budget account</p>
+            <h2 id="account-setup-title">How should {email} start?</h2>
+          </div>
+          <UserRound size={22} />
+        </div>
+        <p>
+          This account does not have a saved budget yet. You can copy the budget stored locally on this device or begin with
+          zero balances and the standard categories.
+        </p>
+        <div className="account-setup-summary">
+          <span>Local records available</span>
+          <strong>{localRecordCount}</strong>
+        </div>
+        {error && <p className="form-error">{error}</p>}
+        <div className="modal-actions account-setup-actions">
+          <button className="secondary" disabled={busy} onClick={() => onChoose("fresh")}>
+            Start Fresh
+          </button>
+          <button className="primary" disabled={busy} onClick={() => onChoose("copy-local")}>
+            <Upload size={17} />
+            {busy ? "Saving..." : "Copy Local Data"}
+          </button>
+        </div>
+      </section>
     </div>
   );
 }

@@ -175,6 +175,21 @@ export const seedData = {
   ],
 };
 
+export function createBlankBudgetData() {
+  return normalizeBudgetData({
+    lists: defaultLists,
+    targets: {
+      monthlySavingsGoal: 0,
+      categoryBudgets: Object.fromEntries(defaultLists.categories.map((category) => [category, 0])),
+    },
+    transactions: [],
+    income: [],
+    savings: [],
+    savingsBuckets: [],
+    reimbursements: [],
+  });
+}
+
 export function createId(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }

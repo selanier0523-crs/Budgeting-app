@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   calculateBudget,
+  createBlankBudgetData,
   createId,
   getAvailableMonths,
   getTransactionReimbursementComputed,
@@ -25,18 +26,27 @@ export function useBudget() {
   const [selectedMonth, setSelectedMonth] = useState(() => getAvailableMonths(loadBudgetData())[0] || todayISO().slice(0, 7));
   const [session, setSession] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [accountDataLoading, setAccountDataLoading] = useState(false);
+  const [accountLoadError, setAccountLoadError] = useState("");
+  const [accountLoadAttempt, setAccountLoadAttempt] = useState(0);
+  const [accountSetup, setAccountSetup] = useState(null);
+  const [accountSetupBusy, setAccountSetupBusy] = useState(false);
   const [syncStatus, setSyncStatus] = useState("Local only");
   const [households, setHouseholds] = useState([]);
   const [activeHouseholdId, setActiveHouseholdId] = useState("");
   const [householdMembers, setHouseholdMembers] = useState([]);
   const [householdProfiles, setHouseholdProfiles] = useState([]);
   const [householdStatus, setHouseholdStatus] = useState("Sign in to connect household accounts.");
-  const cloudLoadRef = useRef(false);
+  const dataOwnerRef = useRef("anonymous");
+  const currentUserIdRef = useRef("");
+  const loadedUserIdRef = useRef("");
+  const loadGenerationRef = useRef(0);
   const saveTimerRef = useRef(null);
 
   useEffect(() => {
+    if (authLoading || session?.user || dataOwnerRef.current !== "anonymous") return;
     saveBudgetData(data);
-  }, [data]);
+  }, [authLoading, data, session?.user]);
 
   useEffect(() => {
     let mounted = true;
@@ -44,6 +54,7 @@ export function useBudget() {
     async function loadSession() {
       const { data: authData } = await supabase.auth.getSession();
       if (!mounted) return;
+      currentUserIdRef.current = authData.session?.user?.id || "";
       setSession(authData.session || null);
       setAuthLoading(false);
     }
@@ -51,6 +62,7 @@ export function useBudget() {
     loadSession();
 
     const { data: subscription } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      currentUserIdRef.current = nextSession?.user?.id || "";
       setSession(nextSession || null);
     });
 
@@ -61,7 +73,21 @@ export function useBudget() {
   }, []);
 
   useEffect(() => {
+    if (authLoading) return;
+
+    const generation = ++loadGenerationRef.current;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+
     if (!session?.user) {
+      dataOwnerRef.current = "anonymous";
+      loadedUserIdRef.current = "";
+      setAccountDataLoading(false);
+      setAccountLoadError("");
+      setAccountSetup(null);
+      setAccountSetupBusy(false);
+      const localData = loadBudgetData();
+      setData(localData);
+      setSelectedMonth(getAvailableMonths(localData)[0] || todayISO().slice(0, 7));
       setSyncStatus("Local only");
       setHouseholds([]);
       setActiveHouseholdId("");
@@ -72,36 +98,56 @@ export function useBudget() {
     }
 
     let cancelled = false;
+    const userId = session.user.id;
+
+    dataOwnerRef.current = "";
+    loadedUserIdRef.current = "";
+    setAccountDataLoading(true);
+    setAccountLoadError("");
+    setAccountSetup(null);
+    setAccountSetupBusy(false);
+    setData(createBlankBudgetData());
+    setHouseholds([]);
+    setActiveHouseholdId("");
+    setHouseholdMembers([]);
+    setHouseholdProfiles([]);
+    setHouseholdStatus("Loading household...");
 
     async function loadCloudBudget() {
-      cloudLoadRef.current = true;
       setSyncStatus("Loading cloud data...");
 
       const { data: profile, error } = await supabase
         .from("budget_profiles")
         .select("data")
-        .eq("user_id", session.user.id)
+        .eq("user_id", userId)
         .maybeSingle();
 
-      if (cancelled) return;
+      if (cancelled || generation !== loadGenerationRef.current) return;
 
       if (error) {
         setSyncStatus(error.message);
-        cloudLoadRef.current = false;
+        setAccountLoadError(error.message);
+        setAccountDataLoading(false);
         return;
       }
 
       if (profile?.data) {
         const normalized = normalizeBudgetData(profile.data);
+        dataOwnerRef.current = userId;
+        loadedUserIdRef.current = userId;
         setData(normalized);
         setSelectedMonth(getAvailableMonths(normalized)[0] || todayISO().slice(0, 7));
         setSyncStatus("Synced");
       } else {
-        await saveCloudBudget(data, session.user.id);
-        if (!cancelled) setSyncStatus("Synced");
+        setAccountSetup({
+          userId,
+          localData: normalizeBudgetData(loadBudgetData()),
+          error: "",
+        });
+        setSyncStatus("Choose how to start this account");
       }
 
-      cloudLoadRef.current = false;
+      setAccountDataLoading(false);
     }
 
     loadCloudBudget();
@@ -109,7 +155,7 @@ export function useBudget() {
     return () => {
       cancelled = true;
     };
-  }, [session?.user?.id]);
+  }, [accountLoadAttempt, authLoading, session?.user?.id]);
 
   useEffect(() => {
     if (!session?.user) return;
@@ -127,19 +173,22 @@ export function useBudget() {
   }, [session?.user?.id, activeHouseholdId, data]);
 
   useEffect(() => {
-    if (!session?.user || cloudLoadRef.current) return;
+    const userId = session?.user?.id;
+    if (!userId || loadedUserIdRef.current !== userId || accountSetup) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
 
     setSyncStatus("Saving...");
     saveTimerRef.current = setTimeout(async () => {
-      const { error } = await saveCloudBudget(data, session.user.id);
+      if (loadedUserIdRef.current !== userId) return;
+      const { error } = await saveCloudBudget(data, userId);
+      if (loadedUserIdRef.current !== userId) return;
       setSyncStatus(error ? error.message : "Synced");
     }, 700);
 
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [data, session?.user?.id]);
+  }, [accountSetup, data, session?.user?.id]);
 
   const months = useMemo(() => getAvailableMonths(data), [data]);
   const budget = useMemo(() => calculateBudget(data, selectedMonth), [data, selectedMonth]);
@@ -285,9 +334,44 @@ export function useBudget() {
   }
 
   async function signOut() {
-    await supabase.auth.signOut();
-    setSession(null);
-    setSyncStatus("Local only");
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    const { error } = await supabase.auth.signOut();
+    if (!error) {
+      currentUserIdRef.current = "";
+      loadedUserIdRef.current = "";
+    }
+    return { error };
+  }
+
+  async function finishAccountSetup(choice) {
+    const userId = session?.user?.id;
+    if (!accountSetup || !userId || accountSetup.userId !== userId || accountSetupBusy) return;
+
+    const nextData = choice === "copy-local" ? normalizeBudgetData(accountSetup.localData) : createBlankBudgetData();
+    setAccountSetupBusy(true);
+    setSyncStatus("Creating account budget...");
+    const { error } = await saveCloudBudget(nextData, userId);
+
+    if (currentUserIdRef.current !== userId) return;
+
+    if (error) {
+      setAccountSetup((current) => (current?.userId === userId ? { ...current, error: error.message } : current));
+      setAccountSetupBusy(false);
+      setSyncStatus(error.message);
+      return;
+    }
+
+    loadedUserIdRef.current = userId;
+    dataOwnerRef.current = userId;
+    setData(nextData);
+    setSelectedMonth(getAvailableMonths(nextData)[0] || todayISO().slice(0, 7));
+    setAccountSetup(null);
+    setAccountSetupBusy(false);
+    setSyncStatus("Synced");
+  }
+
+  function retryAccountLoad() {
+    setAccountLoadAttempt((current) => current + 1);
   }
 
   async function loadHouseholds() {
@@ -429,6 +513,10 @@ export function useBudget() {
     setData,
     user: session?.user || null,
     authLoading,
+    accountDataLoading,
+    accountLoadError,
+    accountSetup,
+    accountSetupBusy,
     syncStatus,
     households,
     activeHouseholdId,
@@ -455,6 +543,8 @@ export function useBudget() {
     signUp,
     signIn,
     signOut,
+    finishAccountSetup,
+    retryAccountLoad,
     createHousehold,
     joinHousehold,
     leaveHousehold,
