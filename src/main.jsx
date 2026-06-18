@@ -1365,6 +1365,20 @@ function matchingImportCategory(options, requestedCategory) {
   return "";
 }
 
+function importCategoryOptionValue(type, category) {
+  return JSON.stringify([type, category]);
+}
+
+function parseImportCategoryOption(value) {
+  try {
+    const [type, category] = JSON.parse(value);
+    if (IMPORTABLE_PLAID_TYPES.includes(type) && typeof category === "string") return { type, category };
+  } catch {
+    // The placeholder uses an empty value.
+  }
+  return { type: "", category: "" };
+}
+
 function PlaidLinkLauncher({ token, onSuccess, onExit, onLoadFailure }) {
   const completedRef = useRef(false);
   const { open, ready, error } = usePlaidLink({
@@ -1482,7 +1496,9 @@ function ImportReviewTable({ imports, categoryOptions, getEdit, updateEdit, onAp
         <tbody>
           {imports.map((imported) => {
             const edit = getEdit(imported);
-            const options = categoryOptions[edit.final_type] || [];
+            const selectedCategoryValue = edit.final_type && edit.final_category
+              ? importCategoryOptionValue(edit.final_type, edit.final_category)
+              : "";
             return (
               <tr key={imported.id}>
                 <td>{toShortDate(imported.date)}</td>
@@ -1513,12 +1529,23 @@ function ImportReviewTable({ imports, categoryOptions, getEdit, updateEdit, onAp
                 </td>
                 <td>
                   <select
-                    value={edit.final_category}
-                    disabled={!edit.final_type}
-                    onChange={(event) => updateEdit(imported.id, { final_category: event.target.value })}
+                    value={selectedCategoryValue}
+                    onChange={(event) => {
+                      const selection = parseImportCategoryOption(event.target.value);
+                      updateEdit(imported.id, {
+                        final_type: selection.type,
+                        final_category: selection.category,
+                      });
+                    }}
                   >
                     <option value="">Choose category</option>
-                    {options.map((option) => <option key={option} value={option}>{option}</option>)}
+                    {IMPORTABLE_PLAID_TYPES.map((type) => (
+                      <optgroup key={type} label={IMPORTABLE_PLAID_TYPE_LABELS[type]}>
+                        {(categoryOptions[type] || []).map((option) => (
+                          <option key={`${type}-${option}`} value={importCategoryOptionValue(type, option)}>{option}</option>
+                        ))}
+                      </optgroup>
+                    ))}
                   </select>
                 </td>
                 <td>
