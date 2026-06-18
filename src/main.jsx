@@ -1128,7 +1128,6 @@ function ImportsScreen({ budgetState }) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [linkToken, setLinkToken] = useState(null);
-  const [openWhenReady, setOpenWhenReady] = useState(false);
   const [edits, setEdits] = useState({});
 
   const categoryOptions = {
@@ -1136,8 +1135,6 @@ function ImportsScreen({ budgetState }) {
     income: data.lists.incomeTypes,
     reimbursement: data.lists.incomeTypes,
     savings: data.lists.savingsPurposes,
-    transfer: ["Other"],
-    unknown: ["Other"],
   };
 
   async function loadImports() {
@@ -1168,39 +1165,14 @@ function ImportsScreen({ budgetState }) {
     loadImports();
   }, [user?.id]);
 
-  const { open, ready } = usePlaidLink({
-    token: linkToken,
-    onSuccess: async (publicToken, metadata) => {
-      setBusy(true);
-      setMessage("Connecting bank account...");
-      const { error } = await supabase.functions.invoke("budget-plaid-exchange-token", {
-        body: {
-          publicToken,
-          institutionName: metadata?.institution?.name || "",
-        },
-      });
-      if (error) {
-        setMessage(error.message);
-      } else {
-        setMessage("Bank connected. Run Sync Transactions to import pending entries.");
-        await loadImports();
-      }
-      setBusy(false);
-    },
-  });
-
-  useEffect(() => {
-    if (linkToken && ready && openWhenReady) {
-      open();
-      setOpenWhenReady(false);
-    }
-  }, [linkToken, ready, openWhenReady, open]);
-
   function getEdit(imported) {
+    const pendingEdit = edits[imported.id] || {};
+    const requestedType = pendingEdit.final_type ?? imported.final_type ?? imported.suggested_type ?? "";
+    const finalType = IMPORTABLE_PLAID_TYPES.includes(requestedType) ? requestedType : "";
+    const requestedCategory = pendingEdit.final_category ?? imported.final_category ?? imported.suggested_category ?? "";
     return {
-      final_type: imported.final_type || imported.suggested_type || "expense",
-      final_category: imported.final_category || imported.suggested_category || "Other",
-      ...edits[imported.id],
+      final_type: finalType,
+      final_category: matchingImportCategory(categoryOptions[finalType] || [], requestedCategory),
     };
   }
 
@@ -1224,8 +1196,38 @@ function ImportsScreen({ budgetState }) {
     }
 
     setLinkToken(result.link_token);
-    setOpenWhenReady(true);
     setMessage("Opening Plaid Link...");
+  }
+
+  async function handlePlaidSuccess(publicToken, metadata) {
+    setLinkToken(null);
+    setBusy(true);
+    setMessage("Connecting bank account...");
+    const { error } = await supabase.functions.invoke("budget-plaid-exchange-token", {
+      body: {
+        publicToken,
+        institutionName: metadata?.institution?.name || "",
+      },
+    });
+    if (error) {
+      setMessage(error.message);
+    } else {
+      setMessage("Bank connected. Run Sync Transactions to import pending entries.");
+      await loadImports();
+    }
+    setBusy(false);
+  }
+
+  function handlePlaidExit(error) {
+    setLinkToken(null);
+    setBusy(false);
+    setMessage(error?.display_message || error?.error_message || "Bank connection canceled. You can try again whenever you are ready.");
+  }
+
+  function handlePlaidLoadFailure(error) {
+    setLinkToken(null);
+    setBusy(false);
+    setMessage(error?.message || "Plaid Link could not load. Please try connecting again.");
   }
 
   async function syncTransactions() {
@@ -1251,6 +1253,11 @@ function ImportsScreen({ budgetState }) {
 
   async function approveImport(imported) {
     const edit = getEdit(imported);
+    const validCategories = categoryOptions[edit.final_type] || [];
+    if (!IMPORTABLE_PLAID_TYPES.includes(edit.final_type) || !validCategories.includes(edit.final_category)) {
+      setMessage("Choose a valid final type and category before approving this transaction.");
+      return;
+    }
     const record = importedToRecord(imported, edit);
     if (!record) {
       setMessage("Choose Expense, Income, Savings, or Reimbursement before approving.");
@@ -1258,7 +1265,6 @@ function ImportsScreen({ budgetState }) {
     }
 
     setBusy(true);
-    addRecord(record.type, record.record);
     const { error } = await supabase
       .from("budget_imported_transactions")
       .update({
@@ -1269,6 +1275,7 @@ function ImportsScreen({ budgetState }) {
         app_record_id: record.record.id,
       })
       .eq("id", imported.id);
+    if (!error) addRecord(record.type, record.record);
     setBusy(false);
 
     setMessage(error ? error.message : "Import approved and added to your budget.");
@@ -1292,6 +1299,15 @@ function ImportsScreen({ budgetState }) {
 
   return (
     <div className="page-stack">
+      {linkToken && (
+        <PlaidLinkLauncher
+          key={linkToken}
+          token={linkToken}
+          onSuccess={handlePlaidSuccess}
+          onExit={handlePlaidExit}
+          onLoadFailure={handlePlaidLoadFailure}
+        />
+      )}
       <section className="toolbar-band">
         <div>
           <p className="eyebrow">Plaid Sandbox</p>
@@ -1299,7 +1315,7 @@ function ImportsScreen({ budgetState }) {
           {message && <p className="sync-line"><Cloud size={14} />{message}</p>}
         </div>
         <div className="management-actions">
-          <button className="primary" onClick={connectBank} disabled={busy}>
+          <button className="primary" onClick={connectBank} disabled={busy || Boolean(linkToken)}>
             <Landmark size={17} />
             Connect Bank
           </button>
@@ -1336,6 +1352,44 @@ function ImportsScreen({ budgetState }) {
   );
 }
 
+const IMPORTABLE_PLAID_TYPES = ["expense", "income", "reimbursement", "savings"];
+const IMPORTABLE_PLAID_TYPE_LABELS = {
+  expense: "Spending",
+  income: "Income",
+  reimbursement: "Reimbursement",
+  savings: "Savings",
+};
+
+function matchingImportCategory(options, requestedCategory) {
+  if (options.includes(requestedCategory)) return requestedCategory;
+  if (options.includes("Other")) return "Other";
+  return options[0] || "";
+}
+
+function PlaidLinkLauncher({ token, onSuccess, onExit, onLoadFailure }) {
+  const completedRef = useRef(false);
+  const { open, ready, error } = usePlaidLink({
+    token,
+    onSuccess: (publicToken, metadata) => {
+      completedRef.current = true;
+      onSuccess(publicToken, metadata);
+    },
+    onExit: (linkError, metadata) => {
+      if (!completedRef.current) onExit(linkError, metadata);
+    },
+  });
+
+  useEffect(() => {
+    if (ready) open();
+  }, [open, ready]);
+
+  useEffect(() => {
+    if (error) onLoadFailure(error);
+  }, [error]);
+
+  return null;
+}
+
 function importedToRecord(imported, edit) {
   const common = {
     importSource: "plaid",
@@ -1359,7 +1413,7 @@ function importedToRecord(imported, edit) {
         source: imported.account_name || imported.merchant_name || "Plaid import",
         description,
         amount,
-        incomeType: edit.final_type === "reimbursement" ? "Paid back by someone" : edit.final_category,
+        incomeType: edit.final_category,
         notes: edit.final_type === "reimbursement" ? "Imported as reimbursement income. Link to the original expense if needed." : "",
       },
     };
@@ -1429,7 +1483,7 @@ function ImportReviewTable({ imports, categoryOptions, getEdit, updateEdit, onAp
         <tbody>
           {imports.map((imported) => {
             const edit = getEdit(imported);
-            const options = categoryOptions[edit.final_type] || ["Other"];
+            const options = categoryOptions[edit.final_type] || [];
             return (
               <tr key={imported.id}>
                 <td>{toShortDate(imported.date)}</td>
@@ -1446,19 +1500,27 @@ function ImportReviewTable({ imports, categoryOptions, getEdit, updateEdit, onAp
                 <td>
                   <select
                     value={edit.final_type}
-                    onChange={(event) => updateEdit(imported.id, { final_type: event.target.value, final_category: (categoryOptions[event.target.value] || ["Other"])[0] })}
+                    onChange={(event) => {
+                      const finalType = event.target.value;
+                      updateEdit(imported.id, {
+                        final_type: finalType,
+                        final_category: matchingImportCategory(categoryOptions[finalType] || [], imported.suggested_category),
+                      });
+                    }}
                   >
-                    {["expense", "income", "reimbursement", "savings", "transfer", "unknown"].map((type) => <option key={type} value={type}>{type}</option>)}
+                    <option value="">Choose type</option>
+                    {IMPORTABLE_PLAID_TYPES.map((type) => <option key={type} value={type}>{IMPORTABLE_PLAID_TYPE_LABELS[type]}</option>)}
                   </select>
                 </td>
                 <td>
                   <select value={edit.final_category} onChange={(event) => updateEdit(imported.id, { final_category: event.target.value })}>
+                    {options.length === 0 && <option value="">No categories available</option>}
                     {options.map((option) => <option key={option} value={option}>{option}</option>)}
                   </select>
                 </td>
                 <td>
                   <div className="row-actions">
-                    <button className="primary" onClick={() => onApprove(imported)} disabled={busy || ["transfer", "unknown"].includes(edit.final_type)}>Approve</button>
+                    <button className="primary" onClick={() => onApprove(imported)} disabled={busy || !edit.final_type || !edit.final_category}>Approve</button>
                     <button className="danger" onClick={() => onReject(imported)} disabled={busy}>Reject</button>
                   </div>
                 </td>
